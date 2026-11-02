@@ -1,0 +1,9 @@
+/data/
+/jar
+*.db
+*.db.wal
+.DS_Store
+/.env
+/bin/
+/benchmarks/
+/benchmark/

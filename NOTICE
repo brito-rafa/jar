@@ -1,0 +1,6 @@
+JAR - Just Another RAG
+Adapted from Ardan Labs Kronk examples/rag/main.go and examples/rag/duck.
+https://github.com/ardanlabs/kronk
+Upstream source revision: 50ace045
+Licensed under Apache License 2.0; see LICENSE.
+Modifications: standalone module, configurable models/paths, sample corpus, safer input and database handling, recursive document conversion, separate index/chat commands, and containerized remote DuckDB storage.

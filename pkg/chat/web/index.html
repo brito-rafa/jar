@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JAR — Just Another RAG</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main><header><div><p class="eyebrow">JUST ANOTHER RAG</p><h1>Your library, in conversation.</h1><p>Ask in English, Portuguese, or Spanish. Answers include sources.</p></div><button id="reset" type="button">Reset conversation</button></header>
+<form id="chat"><label for="input">Your question or slash command</label><textarea id="input" rows="2" placeholder="What would you like to explore?" required></textarea><div id="suggestions" aria-label="Completions"></div><footer><span>Enter to send · Shift+Enter for a new line</span><button id="send" type="submit">Send</button></footer><div class="work-status"><span id="spinner" class="spinner" hidden aria-hidden="true"></span><span id="status" role="status">One local conversation · shared across browser tabs</span></div></form>
+<details><summary>Slash commands · Tab to complete</summary><pre id="help">Loading commands…</pre></details>
+
+<section id="vector-panel" class="vector-panel" hidden aria-label="Vector search results"><span id="vector-title" class="label">LATEST VECTOR SEARCH</span><pre id="vector-results"></pre></section>
+<section id="messages" aria-live="polite" aria-label="Conversation"><article class="notice">Ask a question, or use /list books to explore your library.</article></section>
+
+</main></body></html>
