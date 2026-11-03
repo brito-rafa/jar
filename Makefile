@@ -7,6 +7,7 @@ DOCKER ?= docker
 COMPOSE = $(DOCKER) compose --project-directory "$(CURDIR)" --env-file "$(CURDIR)/.env" -f "$(CURDIR)/config/manifests/compose/compose.yaml"
 DOCS ?=
 DB_PORT ?= 9494
+DB_DATA_DIR ?= $(CURDIR)/data
 CHAT_PORT ?= 8080
 CHAT_HOST ?= 127.0.0.1
 CHAT_ALLOW_ANY_HOST ?= false
@@ -21,12 +22,15 @@ DOCUMENT_WORKERS ?= 20
 EMBEDDING_WORKERS ?= 4
 EMBEDDING_BATCH_SIZE ?= 8
 INSERT_BATCH_SIZE ?= 128
-export CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL CHAT_PORT OPEN_BROWSER FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE INSERT_BATCH_SIZE DOCS DB_URL CHAT_MODEL EMBEDDING_MODEL DIMENSIONS JAR_DB_TOKEN DB_PORT
+export DB_DATA_DIR CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL CHAT_PORT OPEN_BROWSER FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE INSERT_BATCH_SIZE DOCS DB_URL CHAT_MODEL EMBEDDING_MODEL DIMENSIONS JAR_DB_TOKEN DB_PORT
 
 ##@ Database
-.PHONY: db-init db-up db-start db-down db-logs db-reset
-db-init: ## Create data directory and .env token; preserve existing settings
-	@mkdir -p "$(CURDIR)/data"
+.PHONY: db-check db-init db-up db-start db-down db-logs db-reset
+db-check: ## Create DB_DATA_DIR if missing; reject empty paths or files
+	@test -n "$$(printf '%s' "$$DB_DATA_DIR" | tr -d '[:space:]')" || { echo 'ERROR: DB_DATA_DIR must be set to a directory.' >&2; exit 2; }
+	@mkdir -p "$$DB_DATA_DIR" || { printf 'ERROR: Cannot create DB_DATA_DIR: %s\n' "$$DB_DATA_DIR" >&2; exit 2; }
+
+db-init: db-check ## Create .env token; preserve settings; create DB_DATA_DIR
 	@if [ -e .env ]; then echo '.env already exists; keeping it'; else \
 		umask 077; set -C; { printf 'JAR_DB_TOKEN='; openssl rand -hex 32; printf 'DB_PORT=9494\n'; } > .env; \
 	fi
@@ -34,22 +38,23 @@ db-init: ## Create data directory and .env token; preserve existing settings
 db-up: db-init ## Start persistent DuckDB and wait for its TCP endpoint
 	@$(MAKE) --no-print-directory db-start
 
-db-start:
+db-start: db-check
 	$(COMPOSE) up -d --wait --wait-timeout 90
 
-db-down: ## Stop DuckDB; keep the database volume
+db-down: ## Stop DuckDB; keep the local database file
 	$(COMPOSE) down
 
 db-logs: ## Follow DuckDB container logs
 	$(COMPOSE) logs -f duckdb
 
-db-reset: ## ERASE the container database volume and restart; requires CONFIRM=erase
-	@test "$(CONFIRM)" = erase || { echo 'This erases the container database. Run: make db-reset CONFIRM=erase' >&2; exit 2; }
-	$(COMPOSE) down --volumes
+db-reset: db-check ## ERASE local jar.db and its WAL; preserve training/backups; requires CONFIRM=erase
+	@test "$(CONFIRM)" = erase || { echo 'This erases jar.db and its WAL in DB_DATA_DIR. Run: make db-reset CONFIRM=erase' >&2; exit 2; }
+	$(COMPOSE) down
+	@rm -f "$${DB_DATA_DIR:?DB_DATA_DIR is required}/jar.db" "$${DB_DATA_DIR:?DB_DATA_DIR is required}/jar.db.wal"
 	@$(MAKE) --no-print-directory db-up
 
 ##@ Application
-.PHONY: index metadata status chat chat-terminal run build cli-help
+.PHONY: index metadata status chat chat-web chat-terminal run build cli-help
 index: ## Import DOCS recursively (required); load only the embedding model
 	@/bin/sh "$(CURDIR)/hack/check-docs.sh"
 	$(GO) run ./cmd/jar-index -docs "$$DOCS" -db-url "$$DB_URL" \
@@ -60,10 +65,17 @@ index: ## Import DOCS recursively (required); load only the embedding model
 metadata: ## Build filename book/date metadata on an existing index; no re-embedding
 	$(GO) run ./cmd/jar-index -db-url "$$DB_URL" -metadata
 
-status: ## Show remote index status without reading documents or loading models
+status: ## Show index status, local database directory and file size
+	@printf 'Local database directory: %s\n' "$$DB_DATA_DIR"
+	@if [ -f "$$DB_DATA_DIR/jar.db" ]; then \
+		bytes=$$(wc -c < "$$DB_DATA_DIR/jar.db" | tr -d '[:space:]'); \
+		awk -v bytes="$$bytes" 'BEGIN { printf "Local database file: jar.db (%s bytes; %.2f MiB)\n", bytes, bytes / 1048576 }'; \
+	else printf 'Local database file: jar.db (not found)\n'; fi
 	$(GO) run ./cmd/jar-index -db-url "$$DB_URL" -status
 
-chat: ## Start local browser chat and open a browser (CHAT_PORT=8080)
+chat: chat-web ## Alias for browser chat
+
+chat-web: ## Start web chat and open a browser (CHAT_PORT=8080)
 	$(GO) run ./cmd/jar-chat -db-url "$$DB_URL" -chat-model "$$CHAT_MODEL" -web -host "$$CHAT_HOST" -allow-any-host="$$CHAT_ALLOW_ANY_HOST" -public-url "$$CHAT_PUBLIC_URL" -port "$$CHAT_PORT" -open-browser="$$OPEN_BROWSER"
 
 chat-terminal: ## Chat in the terminal with slash commands and Tab completion
@@ -96,7 +108,8 @@ help: ## Display this help
 	  '  make db-up' \
 	  '  make index DOCS="/path/to/documents"' \
 	  '  make status' \
-	  '  make chat' '' \
+	  '  make chat-web' \
+	  '  make chat-terminal  # optional terminal interface' '' \
 	  'Variables (examples explicitly set the defaults unless noted):' \
 	  '  GO               Default: go' \
 	  '                   make build GO=go' \
@@ -105,6 +118,8 @@ help: ## Display this help
 	  '  DOCS             No default; semicolon-separated existing directories for indexing' \
 	  '                   make index DOCS="/path/one;/path/two"' \
 	  '                   make index DOCS="/path/to/documents"' \
+	  '  DB_DATA_DIR      Default: ./data; created by database setup; contains the bind-mounted jar.db' \
+	  '                   Set DB_DATA_DIR=/path/to/database in .env or make db-up DB_DATA_DIR=/path/to/database' \
 	  '  DB_PORT          Default: 9494; publishes the local container on loopback' \
 	  '                   make db-up DB_PORT=9494' \
 	  '                   Set DB_PORT=9494 in .env to keep it across commands.' \

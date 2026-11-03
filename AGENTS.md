@@ -41,8 +41,8 @@ Keep the two explicit command entry points. Do not recreate a root `main.go`, bu
 
 ## Database and integration testing
 
-- Preserve the main database and its Docker volume. Never use the main endpoint for tests that create, replace, or drop corpus tables.
-- Use a uniquely named disposable Compose project, a separate volume, and a nondefault port for destructive integration fixtures. Ensure the test endpoint and token match that disposable service.
+- Preserve the main bind-mounted database (`DB_DATA_DIR/jar.db`, default `data/jar.db`) and any legacy Docker volume backups. Never use the main endpoint for tests that create, replace, or drop corpus tables.
+- Use a uniquely named disposable Compose project, a dedicated temporary `DB_DATA_DIR`, and a nondefault port for destructive integration fixtures. A different project name alone does not isolate bind-mounted files. Never use the project’s real `data/` for a destructive test. Make creates missing `DB_DATA_DIR` directories; empty paths and existing files must be rejected. Ensure the test endpoint and token match that disposable service.
 - Clean up only containers, volumes, files, and processes created for the test.
 - Keep transaction safety, bounded ingestion concurrency, deduplication, and all source locations intact.
 - Use the existing remote query helpers and their safe argument encoding. Do not interpolate document text or user input into SQL.
