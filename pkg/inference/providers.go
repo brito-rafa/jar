@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -47,6 +48,7 @@ func (e *HTTPError) Error() string {
 type Remote struct {
 	base, name string
 	client     *http.Client
+	logger     *log.Logger
 }
 
 func NewRemote(endpoint, name string) (*Remote, error) {
@@ -201,9 +203,19 @@ func (r *Remote) ChatStreaming(ctx context.Context, d model.D) (<-chan model.Cha
 	}
 	payload["model"] = r.name
 	payload["stream"] = false
-	var out model.ChatResponse
-	if e := r.request(ctx, "chat/completions", payload, &out); e != nil {
+	var raw json.RawMessage
+	if e := r.request(ctx, "chat/completions", payload, &raw); e != nil {
 		return nil, e
+	}
+	var response remoteChatResponse
+	if e := json.Unmarshal(raw, &response); e != nil {
+		return nil, fmt.Errorf("decode remote response metrics: %w", e)
+	}
+	r.logResponseMetrics(response)
+	// Keep the original full response, including usage fields beyond our metrics.
+	var out model.ChatResponse
+	if e := json.Unmarshal(raw, &out); e != nil {
+		return nil, fmt.Errorf("decode remote chat response: %w", e)
 	}
 	if len(out.Choices) == 0 || out.Choices[0].Message == nil || strings.TrimSpace(out.Choices[0].Message.Content) == "" {
 		return nil, fmt.Errorf("remote chat returned no text")

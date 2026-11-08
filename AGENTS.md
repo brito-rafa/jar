@@ -34,6 +34,7 @@ Keep the two explicit command entry points. Do not recreate a root `main.go`, bu
 ## Protect ongoing work
 
 - Do not stage, commit, push, or create a PR unless requested.
+- For commits, use the Git author and committer identity associated with GitHub `brito-rafa`, matching commit `1899b15` (`Rafael Brito <rafaelbrito@gmail.com>`). Do not append the handle to commit titles.
 - Preserve unrelated edits and user processes. Do not stop or restart a running chat, indexer, or database unless authorized.
 - Do not start training, reindex the user's corpus, or download/load additional GPU models unless requested or already explicitly authorized as part of verification.
 - Check for competing model processes before an authorized GPU benchmark or live-model test. Do not change concurrency defaults based only on a small synthetic benchmark.
