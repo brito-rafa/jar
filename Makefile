@@ -21,6 +21,7 @@ FORCE_INDEX ?= false
 DOCUMENT_WORKERS ?= 20
 EMBEDDING_WORKERS ?= 4
 EMBEDDING_BATCH_SIZE ?= 8
+EMBEDDING_BUFFER_BATCHES ?= 16
 INSERT_BATCH_SIZE ?= 128
 # Hyphenated .env keys are bridged to portable process environment names.
 remote-db ?=
@@ -58,7 +59,7 @@ remote-index: ## Check remote services, then index DOCS with remote embeddings a
 		-remote-embedding "$$JAR_REMOTE_EMBEDDING" -remote-embedding-model "$$REMOTE_EMBEDDING_MODEL" \
 		-embedding-model "$$EMBEDDING_MODEL" -dimensions "$$DIMENSIONS" \
 		-force="$$FORCE_INDEX" -document-workers "$$DOCUMENT_WORKERS" -embedding-workers "$$EMBEDDING_WORKERS" \
-		-embedding-batch-size "$$EMBEDDING_BATCH_SIZE" -insert-batch-size "$$INSERT_BATCH_SIZE"
+		-embedding-batch-size "$$EMBEDDING_BATCH_SIZE" -embedding-buffer-batches "$$EMBEDDING_BUFFER_BATCHES" -insert-batch-size "$$INSERT_BATCH_SIZE"
 
 remote-chat: ## Check remote services, then open web chat with remote chat, embeddings and database
 	@$(MAKE) --no-print-directory remote-config
@@ -68,7 +69,7 @@ remote-chat: ## Check remote services, then open web chat with remote chat, embe
 		-remote-embedding "$$JAR_REMOTE_EMBEDDING" -remote-embedding-model "$$REMOTE_EMBEDDING_MODEL" \
 		-web -host "$$CHAT_HOST" -allow-any-host="$$CHAT_ALLOW_ANY_HOST" -public-url "$$CHAT_PUBLIC_URL" -port "$$CHAT_PORT" -open-browser="$$OPEN_BROWSER"
 
-export DB_DATA_DIR CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL CHAT_PORT OPEN_BROWSER FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE INSERT_BATCH_SIZE DOCS DB_URL CHAT_MODEL EMBEDDING_MODEL DIMENSIONS JAR_DB_TOKEN DB_PORT
+export DB_DATA_DIR CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL CHAT_PORT OPEN_BROWSER FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE EMBEDDING_BUFFER_BATCHES INSERT_BATCH_SIZE DOCS DB_URL CHAT_MODEL EMBEDDING_MODEL DIMENSIONS JAR_DB_TOKEN DB_PORT
 
 ##@ Database
 .PHONY: local-db-check local-db-init local-db-up local-db-start local-db-down local-db-logs local-db-reset
@@ -112,7 +113,7 @@ index: ## Import DOCS recursively (required); load only the embedding model
 	$(GO) run ./cmd/jar-index -docs "$$DOCS" -db-url "$$DB_URL" \
 		-embedding-model "$$EMBEDDING_MODEL" -dimensions "$$DIMENSIONS" \
 		-force="$$FORCE_INDEX" -document-workers "$$DOCUMENT_WORKERS" -embedding-workers "$$EMBEDDING_WORKERS" \
-		-embedding-batch-size "$$EMBEDDING_BATCH_SIZE" -insert-batch-size "$$INSERT_BATCH_SIZE"
+		-embedding-batch-size "$$EMBEDDING_BATCH_SIZE" -embedding-buffer-batches "$$EMBEDDING_BUFFER_BATCHES" -insert-batch-size "$$INSERT_BATCH_SIZE"
 
 metadata: ## Build filename book/date metadata on an existing index; no re-embedding
 	$(GO) run ./cmd/jar-index -db-url "$$DB_URL" -metadata
@@ -215,6 +216,8 @@ help: ## Display this help
 	  '  DOCUMENT_WORKERS Default: 20 converters; make index DOCS="/path/to/documents" DOCUMENT_WORKERS=20' \
 	  '  EMBEDDING_WORKERS Default: 4; make index DOCS="/path/to/documents" EMBEDDING_WORKERS=4' \
 	  '  EMBEDDING_BATCH_SIZE Default: 8; texts per embedding call' \
+	  '  EMBEDDING_BUFFER_BATCHES Default: 16; completed batches queued independently of workers' \
+	  '                   make remote-index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BUFFER_BATCHES=16' \
 	  '  INSERT_BATCH_SIZE Default: 128; rows per database request' \
 	  '  DIMENSIONS       Default: 768; values per embedding vector' \
 	  '                   make index DOCS="/path/to/documents" DIMENSIONS=768' \

@@ -26,7 +26,7 @@ func TestRemoteLoadPoolAndBatches(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		options LoadOptions
-	}{{"serial", LoadOptions{1, 1, 1}}, {"pooled", LoadOptions{2, 8, 128}}} {
+	}{{"serial", LoadOptions{EmbeddingWorkers: 1, EmbeddingBatchSize: 1, InsertBatchSize: 1}}, {"pooled", LoadOptions{EmbeddingWorkers: 2, EmbeddingBatchSize: 8, InsertBatchSize: 128}}} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := remoteExec(db, "DROP TABLE IF EXISTS items"); err != nil {
 				t.Fatal(err)

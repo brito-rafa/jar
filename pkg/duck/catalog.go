@@ -47,7 +47,11 @@ func hasCatalog(db *sql.DB) (bool, error) {
 	return n > 0, err
 }
 func createCatalog(db *sql.DB) error {
-	return remoteExec(db, `CREATE TABLE item_sources (chunk_id INTEGER, label VARCHAR, path VARCHAR, title VARCHAR, kind VARCHAR, date_key VARCHAR, precision VARCHAR, raw_code VARCHAR, search_key VARCHAR)`)
+	err := remoteExec(db, `CREATE TABLE item_sources (chunk_id INTEGER, label VARCHAR, path VARCHAR, title VARCHAR, kind VARCHAR, date_key VARCHAR, precision VARCHAR, raw_code VARCHAR, search_key VARCHAR)`)
+	if err != nil && strings.Contains(err.Error(), "Catalog write-write conflict") {
+		return fmt.Errorf("create source catalog: conflicting schema transaction; ensure no other index, metadata rebuild or reset is running against this database. If all writers have stopped and the conflict persists, inspect server sessions and restart the DuckDB service before retrying: %w", err)
+	}
+	return err
 }
 func originInsert(rows []embeddedPassage) (string, error) {
 	var values []string

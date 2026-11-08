@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestDeduplicatePreservesOriginsAndMeaningfulDifferences(t *testing.T) {
 }
 
 func TestEmbeddingPoolIsBoundedAndKeepsVectorAssociation(t *testing.T) {
-	opts := LoadOptions{2, 1, 3}
+	opts := LoadOptions{EmbeddingWorkers: 2, EmbeddingBatchSize: 1, InsertBatchSize: 3}
 	var passages []passage
 	for i := range 9 {
 		passages = append(passages, passage{ID: i, Text: strconv.Itoa(i)})
@@ -104,7 +105,7 @@ func TestPipelineCancelsAndJoinsOnWriteFailure(t *testing.T) {
 	passages := make([]passage, 20)
 	done := make(chan error, 1)
 	go func() {
-		done <- runPipeline(context.Background(), passages, LoadOptions{2, 1, 1}, func(ctx context.Context, _ []string) ([][]float32, error) {
+		done <- runPipeline(context.Background(), passages, LoadOptions{EmbeddingWorkers: 2, EmbeddingBatchSize: 1, InsertBatchSize: 1}, func(ctx context.Context, _ []string) ([][]float32, error) {
 			active.Add(1)
 			defer active.Add(-1)
 			select {
@@ -151,5 +152,63 @@ func TestBatchInsertKeepsUnicodeNullsAndSources(t *testing.T) {
 	}
 	if text != rows[0].Text || !strings.Contains(sources, "b.doc") {
 		t.Fatalf("%q %s", text, sources)
+	}
+}
+
+// A single embedding worker must continue filling the configured buffer while
+// the database writer is blocked, rather than being limited to one queued batch.
+func TestEmbeddingBufferIndependentOfWorkerCount(t *testing.T) {
+	opts := LoadOptions{EmbeddingWorkers: 1, EmbeddingBatchSize: 1, InsertBatchSize: 1, EmbeddingBufferBatches: 3}
+	passages := make([]passage, 8)
+	for i := range passages {
+		passages[i] = passage{ID: i, Text: strconv.Itoa(i)}
+	}
+	embedded := make(chan int, 8)
+	writing := make(chan struct{})
+	release := make(chan struct{})
+	var closeOnce sync.Once
+	unblock := func() { closeOnce.Do(func() { close(release) }) }
+	defer unblock()
+	done := make(chan error, 1)
+	writes := 0
+	go func() {
+		done <- runPipeline(context.Background(), passages, opts, func(ctx context.Context, texts []string) ([][]float32, error) {
+			id, _ := strconv.Atoi(texts[0])
+			embedded <- id
+			return [][]float32{{1, 0}}, nil
+		}, func(rows []embeddedPassage) error {
+			if writes == 0 {
+				close(writing)
+				<-release
+			}
+			writes += len(rows)
+			return nil
+		})
+	}()
+	select {
+	case <-writing:
+	case <-time.After(3 * time.Second):
+		t.Fatal("writer did not start")
+	}
+	// First batch is held by the writer; three more fit in the queue. The worker
+	// can then compute the fifth batch before blocking on delivery.
+	for i := 0; i < 5; i++ {
+		select {
+		case <-embedded:
+		case <-time.After(3 * time.Second):
+			t.Fatal("worker stalled before filling the independent buffer")
+		}
+	}
+	unblock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("pipeline did not finish")
+	}
+	if writes != len(passages) {
+		t.Fatalf("wrote %d of %d passages", writes, len(passages))
 	}
 }

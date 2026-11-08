@@ -213,6 +213,7 @@ Indexing processes documents and embedding requests concurrently, then writes re
 | `DOCUMENT_WORKERS` | 20 | Documents processed at once |
 | `EMBEDDING_WORKERS` | 4 | Concurrent embedding requests |
 | `EMBEDDING_BATCH_SIZE` | 8 | Passages per embedding request |
+| `EMBEDDING_BUFFER_BATCHES` | 16 | Completed embedding batches buffered independently of worker count |
 | `INSERT_BATCH_SIZE` | 128 | Unique passages per database insert |
 
 Override settings when running indexing:
@@ -347,3 +348,18 @@ Make bridges these hyphenated keys to `JAR_REMOTE_EMBEDDING`, `JAR_REMOTE_CHAT`,
 Loading reports embedding batch-request latency (average/maximum and failures), insert-call latency, elapsed time, written chunks per second, and result-queue wait summed across workers. Embedding latency includes network, server queueing and any token-limit recovery; insert latency includes serialization and source-metadata writes. These are client timings, not GPU kernel timings. Progress is provisional until the transaction commits; a failed load rolls back its writes. Metrics are also printed on failure.
 
 For llama.cpp servers reporting a structured context-limit error, JAR retries embedding requests using the server tokenizer and token arrays truncated to the reported limit, retaining boundary special tokens. Original indexed text is unchanged. Other HTTP errors fail with their status and structured error type; server response text and document content are not logged. Servers without a compatible tokenizer must accept the input length or require smaller document passages.
+
+The completed-embedding queue defaults to 16 batches, independently of worker concurrency. With batches of 8, it buffers up to 128 completed chunks while inserts run. Additional chunks may be in flight or awaiting an insert. This bounds memory without forcing a single embedding worker to pause after one queued batch. A larger buffer can reduce temporary backpressure; it cannot overcome a sustained database bottleneck.
+
+```bash
+# One remote embedding worker, 8 chunks per request, 128-chunk queue.
+make remote-index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BATCH_SIZE=8 EMBEDDING_BUFFER_BATCHES=16
+
+# Compare larger requests while retaining a 128-chunk queue.
+make remote-index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BATCH_SIZE=16 EMBEDDING_BUFFER_BATCHES=8
+
+# Same option is available for local inference.
+make index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BUFFER_BATCHES=16
+```
+
+The direct indexer flag is `--embedding-buffer-batches=16`. Set `EMBEDDING_BUFFER_BATCHES=16` in `.env` to persist it. An already unchanged index is reused; add `FORCE_INDEX=true` only when intentionally rebuilding it for a comparison.

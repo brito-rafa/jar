@@ -126,7 +126,7 @@ func loadChunks(db *sqlpkg.DB, krn inference.Embedder, file string, dimensions i
 		return err
 	}
 	fmt.Printf("Deduplication: %d unique chunks; %d duplicate occurrences collapsed (all source locations retained).\n", len(passages), duplicates)
-	fmt.Printf("Embedding workers: %d; embedding batch: %d; insert batch: %d\n", opts.EmbeddingWorkers, opts.EmbeddingBatchSize, opts.InsertBatchSize)
+	fmt.Printf("Embedding workers: %d; embedding batch: %d; insert batch: %d; completed embedding buffer: %d batches (up to %d chunks)\n", opts.EmbeddingWorkers, opts.EmbeddingBatchSize, opts.InsertBatchSize, opts.bufferBatches(), opts.bufferBatches()*opts.EmbeddingBatchSize)
 	return runPipeline(context.Background(), passages, opts, func(ctx context.Context, texts []string) ([][]float32, error) {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()

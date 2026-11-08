@@ -15,9 +15,19 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-type LoadOptions struct{ EmbeddingWorkers, EmbeddingBatchSize, InsertBatchSize int }
+type LoadOptions struct{ EmbeddingWorkers, EmbeddingBatchSize, InsertBatchSize, EmbeddingBufferBatches int }
 
+// Zero preserves the default for programmatic callers that omit this option.
+func (o LoadOptions) bufferBatches() int {
+	if o.EmbeddingBufferBatches == 0 {
+		return 16
+	}
+	return o.EmbeddingBufferBatches
+}
 func (o LoadOptions) Validate() error {
+	if o.EmbeddingBufferBatches < 0 || o.EmbeddingBufferBatches > 1024 {
+		return fmt.Errorf("embedding-buffer-batches must be between 1 and 1024 (zero selects the default for Go callers)")
+	}
 	if o.EmbeddingWorkers < 1 || o.EmbeddingWorkers > 8 {
 		return fmt.Errorf("embedding-workers must be between 1 and 8")
 	}
@@ -153,7 +163,7 @@ func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embe
 		rows []embeddedPassage
 		err  error
 	}
-	results := make(chan result, opts.EmbeddingWorkers)
+	results := make(chan result, opts.bufferBatches())
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer close(jobs)

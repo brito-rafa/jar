@@ -27,6 +27,7 @@ func Run(args []string) error {
 	documentWorkers := f.Int("document-workers", 20, "Concurrent document converters (1-64)")
 	embeddingWorkers := f.Int("embedding-workers", 4, "Concurrent embedding request workers (1-8)")
 	embeddingBatch := f.Int("embedding-batch-size", 8, "Texts per embedding request (1-128)")
+	embeddingBuffer := f.Int("embedding-buffer-batches", 16, "Completed embedding batches buffered independently of workers (1-1024)")
 	insertBatch := f.Int("insert-batch-size", 128, "Rows per database insert (1-512)")
 	force := f.Bool("force", false, "Rebuild even if the corpus is unchanged (useful for worker comparisons)")
 	metadataOnly := f.Bool("metadata", false, "Build book/date metadata from stored filenames without re-embedding")
@@ -48,7 +49,10 @@ func Run(args []string) error {
 	if *dimensions <= 0 || *embedding == "" {
 		return fmt.Errorf("embedding-model and positive dimensions are required")
 	}
-	options := duck.LoadOptions{EmbeddingWorkers: *embeddingWorkers, EmbeddingBatchSize: *embeddingBatch, InsertBatchSize: *insertBatch}
+	if *embeddingBuffer < 1 {
+		return fmt.Errorf("embedding-buffer-batches must be between 1 and 1024")
+	}
+	options := duck.LoadOptions{EmbeddingBufferBatches: *embeddingBuffer, EmbeddingWorkers: *embeddingWorkers, EmbeddingBatchSize: *embeddingBatch, InsertBatchSize: *insertBatch}
 	if err := options.Validate(); err != nil {
 		return err
 	}
