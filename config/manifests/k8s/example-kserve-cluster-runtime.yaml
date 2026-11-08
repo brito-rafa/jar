@@ -1,0 +1,131 @@
+# Two cluster-scoped building blocks, then two InferenceServices that use them.
+#
+#   ClusterStorageContainer "hf-gguf"   handles storageUri values that start with hf-gguf://
+#   ClusterServingRuntime  "llamacpp-rocm"  llama.cpp on ROCm, shared by both models
+#
+# GPU sharing: the AMD device plugin exposes the Radeon as a single amd.com/gpu, so only one
+# pod could hold it. These pods don't request it; they mount /dev/kfd and /dev/dri from the
+# node and run privileged instead. The scheduler no longer tracks the GPU, so VRAM is on us:
+# Ministral Q4_K_M ~5.2 GB + KV cache, Granite Q8_0 ~0.3 GB; that fits the RX 6600's 8 GB.
+---
+# Downloads ONE file from a Hugging Face repo. URI format:
+#   hf-gguf://<org>/<repo>/<path/to/file.gguf>
+# (KServe's built-in hf:// handler snapshots the whole repo, i.e. every quant.)
+# KServe runs this as the pod's init container and appends two arguments: the storageUri and
+# the destination directory (/mnt/models). The container name must be "storage-initializer".
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterStorageContainer
+metadata:
+  name: hf-gguf
+spec:
+  container:
+    name: storage-initializer
+    image: curlimages/curl:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -eu
+      src="${1#hf-gguf://}"                     # org/repo/path/to/file.gguf
+      dest="$2"
+      repo="$(echo "$src" | cut -d/ -f1-2)"
+      file="${src#*/*/}"
+      url="https://huggingface.co/${repo}/resolve/${HF_REVISION:-main}/${file}"
+      out="${dest}/$(basename "$file")"
+      mkdir -p "$dest"
+      echo "hf-gguf: ${url} -> ${out}"
+      set -- -fL --retry 5 --retry-all-errors -C - -o "${out}.part"
+      [ -n "${HF_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer ${HF_TOKEN}"
+      curl "$@" "$url"
+      mv "${out}.part" "$out"
+      ls -lh "$out"
+    - hf-gguf                                    # $0 for the script; KServe's args become $1 and $2
+    env:
+    - name: HF_TOKEN                             # only needed for gated repos; secret is optional
+      valueFrom:
+        secretKeyRef:
+          name: hf-secret                        # must live in the InferenceService's namespace
+          key: HF_TOKEN
+          optional: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        cpu: "1"
+        memory: 256Mi
+  supportedUriFormats:
+  - prefix: hf-gguf://
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
+metadata:
+  name: llamacpp-rocm
+spec:
+  supportedModelFormats:
+  - name: gguf
+    autoSelect: true
+  containers:
+  - name: kserve-container
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm   # fallback if ROCm balks: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    args: ["--host", "0.0.0.0", "--port", "8080", "-ngl", "99"]
+    env:
+    - name: HSA_OVERRIDE_GFX_VERSION   # RX 6600 (gfx1032) isn't on ROCm's support list; present it as gfx1030
+      value: "10.3.0"
+    securityContext:
+      privileged: true                 # needed to open the node's GPU device nodes without the device plugin
+    volumeMounts:
+    - {name: kfd, mountPath: /dev/kfd}
+    - {name: dri, mountPath: /dev/dri}
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    readinessProbe:                     # llama-server answers 503 on /health until the model is loaded
+      httpGet: {path: /health, port: 8080}
+      periodSeconds: 10
+      failureThreshold: 60
+  volumes:
+  - {name: kfd, hostPath: {path: /dev/kfd}}
+  - {name: dri, hostPath: {path: /dev/dri}}
+---
+# Chat. Mistral recommends temperature below 0.1 for everyday use; requests can override it.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ministral-3-8b
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-rocm
+      storageUri: hf-gguf://mistralai/Ministral-3-8B-Instruct-2512-GGUF/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf
+      args: ["-m", "/mnt/models/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+             "--alias", "ministral-3-8b", "-c", "4096", "--jinja", "--temp", "0.05"]
+      resources:
+        requests: {cpu: "2", memory: 4Gi}
+        limits: {memory: 8Gi}
+---
+# Embeddings: 768-dim vectors, 512-token max input; 4 slots x 512 tokens, and the
+# micro-batch covers a whole input because the model isn't causal.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: granite-embedding
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-rocm
+      storageUri: hf-gguf://bartowski/granite-embedding-278m-multilingual-GGUF/granite-embedding-278m-multilingual-Q8_0.gguf
+      args: ["-m", "/mnt/models/granite-embedding-278m-multilingual-Q8_0.gguf",
+             "--alias", "granite-embedding", "--embeddings",
+             "-c", "2048", "-np", "4", "-b", "2048", "-ub", "2048"]
+      resources:
+        requests: {cpu: "1", memory: 512Mi}
+        limits: {memory: 1Gi}

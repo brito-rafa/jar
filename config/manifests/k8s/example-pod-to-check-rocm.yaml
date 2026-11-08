@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rocm-check
+spec:
+  restartPolicy: Never
+  containers:
+  - name: check
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm
+    args: ["--list-devices"]
+    env:
+    - name: HSA_OVERRIDE_GFX_VERSION
+      value: "10.3.0"
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - {name: kfd, mountPath: /dev/kfd}
+    - {name: dri, mountPath: /dev/dri}
+  volumes:
+  - {name: kfd, hostPath: {path: /dev/kfd}}
+  - {name: dri, hostPath: {path: /dev/dri}}

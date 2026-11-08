@@ -1,0 +1,150 @@
+# DuckDB 2.0 in a pod, with the database file on a PVC and a Service in front of it.
+#
+# One process owns /data/lab.duckdb and serves it over Quack, DuckDB 2.0's client-server
+# protocol (HTTP-based). Following DuckDB's guidance, Quack listens on localhost only and an
+# nginx sidecar exposes it to the Service. Other pods and machines connect over the network,
+# so nothing else ever opens the file directly.
+#
+#   clients ──> Service duckdb:9494 ──> nginx :8080 ──> Quack 127.0.0.1:9494 ──> /data/lab.duckdb
+#
+# Also kept: the CLI (kubectl attach -it deploy/duckdb -c duckdb) and the web UI
+# (kubectl port-forward deploy/duckdb 4213:4213).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: duckdb-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+# Startup script, in a Secret because it holds the Quack token.
+# Replace the token before applying, e.g. with the output of: openssl rand -hex 24
+apiVersion: v1
+kind: Secret
+metadata:
+  name: duckdb-init
+type: Opaque
+stringData:
+  init.sql: |
+    SET memory_limit = '6GB';
+    SET threads = 4;
+    INSTALL ui;
+    LOAD ui;
+    CALL start_ui_server();
+    INSTALL quack;
+    LOAD quack;
+    CALL quack_serve('quack:127.0.0.1:9494', token = 'CHANGE-ME-to-a-long-random-token');
+---
+# nginx settings follow DuckDB's reverse-proxy guide: large request bodies (PREPARE/APPEND),
+# no response buffering (streamed FETCH results), long timeouts, and upstream keep-alive so
+# Quack's per-connection state survives between requests.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: duckdb-quack-proxy
+data:
+  nginx.conf: |
+    events {}
+    http {
+      upstream quack {
+        server 127.0.0.1:9494;
+        keepalive 32;
+      }
+      server {
+        listen 8080;
+        client_max_body_size 256m;
+        location / {
+          proxy_pass http://quack;
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+          proxy_buffering off;
+          proxy_read_timeout 600s;
+          proxy_send_timeout 600s;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: duckdb
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # never run the old and new pod at once: the second couldn't lock the file
+  selector:
+    matchLabels:
+      app: duckdb
+  template:
+    metadata:
+      labels:
+        app: duckdb
+    spec:
+      containers:
+      - name: duckdb
+        image: duckdb/duckdb:2.0.0   # pin it: older DuckDB versions may not open files written by newer ones
+        command: ["/duckdb", "/data/lab.duckdb", "-init", "/config/init.sql"]
+        stdin: true                  # the CLI exits when stdin closes; a TTY keeps it (and its servers) running
+        tty: true
+        env:
+        - name: HOME                 # extensions (~/.duckdb/extensions) and CLI history persist on the PVC
+          value: /data
+        ports:
+        - name: ui
+          containerPort: 4213
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            memory: 8Gi              # keep above memory_limit: DuckDB uses some memory outside its buffer pool
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: init
+          mountPath: /config
+          readOnly: true
+      - name: quack-proxy
+        image: nginx:stable-alpine
+        ports:
+        - name: quack-proxy
+          containerPort: 8080
+        readinessProbe:              # ready once nginx accepts connections
+          tcpSocket:
+            port: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+        volumeMounts:
+        - name: proxy-conf
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: duckdb-data
+      - name: init
+        secret:
+          secretName: duckdb-init
+      - name: proxy-conf
+        configMap:
+          name: duckdb-quack-proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: duckdb
+spec:
+  selector:
+    app: duckdb
+  ports:
+  - name: quack
+    port: 9494                       # DuckDB's default Quack port, so client URIs look familiar
+    targetPort: quack-proxy

@@ -1,0 +1,141 @@
+# One OpenAI-compatible endpoint for both KServe models, routed by the "model" field.
+# Envoy AI Gateway (now called Agent Router) reads "model" from each request body, sets the
+# x-ai-eg-model header, and the AIGatewayRoute below picks the matching predictor Service.
+#
+#   client ──> Envoy :80 ──┬─ model=ministral-3-8b    ──> ministral-3-8b-predictor:80
+#                          └─ model=granite-embedding ──> granite-embedding-predictor:80
+#
+# Based on the project's basic example for v1.2.1; everything lives in the "default" namespace
+# next to the InferenceServices.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: ai-gateway
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+# Envoy's default resource requests are sized for production; clear them for a single-node lab.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: ai-gateway
+  namespace: default
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        container:
+          resources: {}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ai-gateway
+  namespace: default
+spec:
+  gatewayClassName: ai-gateway
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: ai-gateway
+---
+# Envoy buffers only 32 KiB per request by default; long prompts and embedding batches need more.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: ai-gateway-buffer-limit
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+  connection:
+    bufferLimit: 50Mi
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: kserve-models
+  namespace: default
+spec:
+  parentRefs:
+  - name: ai-gateway
+    kind: Gateway
+    group: gateway.networking.k8s.io
+  rules:
+  - name: ministral
+    matches:
+    - headers:
+      - type: Exact
+        name: x-ai-eg-model
+        value: ministral-3-8b
+    backendRefs:
+    - name: ministral-3-8b
+    timeouts:
+      request: 600s          # default is 60s, too short for long generations (~35 tokens/s)
+  - name: granite
+    matches:
+    - headers:
+      - type: Exact
+        name: x-ai-eg-model
+        value: granite-embedding
+    backendRefs:
+    - name: granite-embedding
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: ministral-3-8b
+  namespace: default
+spec:
+  schema:
+    name: OpenAI
+  backendRef:
+    name: ministral-3-8b
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: granite-embedding
+  namespace: default
+spec:
+  schema:
+    name: OpenAI
+  backendRef:
+    name: granite-embedding
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+# AIServiceBackend can't point at a Kubernetes Service directly yet, so each predictor
+# Service is wrapped in an Envoy Gateway Backend by its cluster DNS name.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: ministral-3-8b
+  namespace: default
+spec:
+  endpoints:
+  - fqdn:
+      hostname: ministral-3-8b-predictor.default.svc.cluster.local
+      port: 80
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: granite-embedding
+  namespace: default
+spec:
+  endpoints:
+  - fqdn:
+      hostname: granite-embedding-predictor.default.svc.cluster.local
+      port: 80

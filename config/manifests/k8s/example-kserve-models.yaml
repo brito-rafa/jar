@@ -1,0 +1,83 @@
+# Namespaced objects only: one ServingRuntime and two InferenceServices, all in the same namespace.
+#
+# Downloads: KServe has no namespaced StorageContainer kind, so these use plain https:// URIs,
+# which the chart's built-in "default" ClusterStorageContainer handles. It saves each file to
+# /mnt/models/<filename>, which is what the -m paths below point at.
+#
+# GPU sharing: the AMD device plugin exposes the Radeon as a single amd.com/gpu, so only one
+# pod could hold it. These pods don't request it; they mount /dev/kfd and /dev/dri from the
+# node and run privileged instead. The scheduler no longer tracks the GPU, so VRAM is on us:
+# Ministral Q4_K_M ~5.2 GB + KV cache, Granite Q8_0 ~0.3 GB; that fits the RX 6600's 8 GB.
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: llamacpp-rocm
+spec:
+  supportedModelFormats:
+  - name: gguf
+    autoSelect: true
+  containers:
+  - name: kserve-container
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm   # fallback if ROCm balks: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    args: ["--host", "0.0.0.0", "--port", "8080", "-ngl", "99"]
+    env:
+    - name: HSA_OVERRIDE_GFX_VERSION   # RX 6600 (gfx1032) isn't on ROCm's support list; present it as gfx1030
+      value: "10.3.0"
+    securityContext:
+      privileged: true                 # needed to open the node's GPU device nodes without the device plugin
+    volumeMounts:
+    - {name: kfd, mountPath: /dev/kfd}
+    - {name: dri, mountPath: /dev/dri}
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    readinessProbe:                     # llama-server answers 503 on /health until the model is loaded
+      httpGet: {path: /health, port: 8080}
+      periodSeconds: 10
+      failureThreshold: 60
+  volumes:
+  - {name: kfd, hostPath: {path: /dev/kfd}}
+  - {name: dri, hostPath: {path: /dev/dri}}
+---
+# Chat. Mistral recommends temperature below 0.1 for everyday use; requests can override it.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ministral-3-8b
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-rocm
+      storageUri: https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/resolve/main/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf
+      args: ["-m", "/mnt/models/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+             "--alias", "ministral-3-8b", "-c", "4096", "--jinja", "--temp", "0.05"]
+      resources:
+        requests: {cpu: "2", memory: 4Gi}
+        limits: {memory: 8Gi}
+---
+# Embeddings: 768-dim vectors, 512-token max input; 4 slots x 512 tokens, and the
+# micro-batch covers a whole input because the model isn't causal.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: granite-embedding
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-rocm
+      storageUri: https://huggingface.co/bartowski/granite-embedding-278m-multilingual-GGUF/resolve/main/granite-embedding-278m-multilingual-Q8_0.gguf
+      args: ["-m", "/mnt/models/granite-embedding-278m-multilingual-Q8_0.gguf",
+             "--alias", "granite-embedding", "--embeddings",
+             "-c", "2048", "-np", "4", "-b", "2048", "-ub", "2048"]
+      resources:
+        requests: {cpu: "1", memory: 512Mi}
+        limits: {memory: 1Gi}
