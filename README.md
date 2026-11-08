@@ -45,8 +45,18 @@ The `jar-index -status` command reads index metadata and chunk count.
 ## Requirements
 
 - Go 1.27.3 or newer and a C compiler for the DuckDB Go client. On macOS, use native ARM64 Go and install Apple command-line tools with `xcode-select --install` if needed.
-- Docker Desktop running, with Compose support.
+- Docker running with Compose support (Docker Engine on Linux or Docker Desktop on macOS).
 - Disk space and an initial internet connection for dependencies, models, native libraries, the container image, and DuckDB extensions.
+
+### Document converters on Linux
+
+On Debian/Ubuntu, install the local converters:
+
+```sh
+sudo apt-get install poppler-utils libreoffice-writer wv
+```
+
+PDF extraction uses `pdftotext`. Word extraction uses `wvWare` for DOC when available, then headless LibreOffice for DOC/DOCX. LibreOffice alone handles both Word formats. Scanned PDFs without a text layer still need OCR before indexing; empty documents are skipped with a warning.
 
 ### Document converters on macOS
 

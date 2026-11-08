@@ -234,3 +234,49 @@ func TestDocumentWorkersKeepDeterministicCorpus(t *testing.T) {
 		t.Fatal("worker count changed corpus ordering")
 	}
 }
+
+func TestWordExtractionWithoutTextutil(t *testing.T) {
+	for _, ext := range []string{"DOC", "docx"} {
+		t.Run(ext, func(t *testing.T) {
+			tools := t.TempDir()
+			// Check the absolute source path, private profile, and output directory.
+			script := `#!/bin/sh
+case "$1" in -env:UserInstallation=file://*) ;; *) exit 2;; esac
+[ "$2" = "--headless" ] || exit 3
+[ "$7" = "$SOURCE" ] || exit 4
+[ "$PWD" = "$6" ] || exit 5
+name=${7##*/}
+printf '\357\273\277Practical wisdom.' > "$6/${name%.*}.txt"
+`
+			if err := os.WriteFile(filepath.Join(tools, "soffice"), []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", tools)
+			path := filepath.Join(t.TempDir(), "sample with spaces."+ext)
+			if err := os.WriteFile(path, []byte("synthetic document"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SOURCE", path)
+			got, err := extractText(path)
+			if err != nil || got != "Practical wisdom." {
+				t.Fatalf("got %q, %v", got, err)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil || string(b) != "synthetic document" {
+				t.Fatalf("source changed: %q, %v", b, err)
+			}
+		})
+	}
+}
+
+func TestDOCExtractionWithOnlyWvWare(t *testing.T) {
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "wvWare"), []byte("#!/bin/sh\nprintf 'Legacy Word text'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools)
+	got, err := extractText(filepath.Join(t.TempDir(), "sample.DOC"))
+	if err != nil || got != "Legacy Word text" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}

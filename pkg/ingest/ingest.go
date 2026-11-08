@@ -151,19 +151,23 @@ func extractText(path string) (string, error) {
 		b, err := os.ReadFile(path)
 		return string(b), err
 	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var cmd *exec.Cmd
 	if strings.EqualFold(filepath.Ext(path), ".pdf") {
 		tool, err := exec.LookPath("pdftotext")
 		if err != nil {
-			return "", fmt.Errorf("pdf extraction requires pdftotext: install with brew install poppler")
+			return "", fmt.Errorf("pdf extraction requires pdftotext: install poppler-utils on Debian/Ubuntu or brew install poppler on macOS")
 		}
 		cmd = exec.CommandContext(ctx, tool, "-enc", "UTF-8", path, "-")
 	} else {
 		tool, err := exec.LookPath("textutil")
 		if err != nil {
-			return "", fmt.Errorf("word extraction requires macOS textutil")
+			return extractWordWithoutTextutil(ctx, path)
 		}
 		cmd = exec.CommandContext(ctx, tool, "-convert", "txt", "-stdout", "-encoding", "UTF-8", "-noload", "--", path)
 	}
@@ -173,49 +177,69 @@ func extractText(path string) (string, error) {
 	if err != nil && strings.EqualFold(filepath.Ext(path), ".pdf") && strings.Contains(strings.ToLower(stderr.String()), "incorrect password") {
 		return "", errPasswordProtected
 	}
-	binaryOutput := bytes.ContainsRune(b, 0)
 	if strings.EqualFold(filepath.Ext(path), ".doc") && (err != nil || strings.TrimSpace(string(b)) == "" || bytes.ContainsRune(b, 0)) {
-		legacy, lookupErr := exec.LookPath("wvWare")
-		if lookupErr != nil {
-			return "", fmt.Errorf("textutil could not extract this legacy Word document; install fallback with brew install wv")
-		}
-		fallback := exec.CommandContext(ctx, legacy, "-x", "wvText.xml", "-c", "UTF-8", "-1", path)
-		// Keep any images or auxiliary conversion files away from the originals.
-		scratch, tempErr := os.MkdirTemp("", "jar-word-*")
-		if tempErr != nil {
-			return "", tempErr
-		}
-		defer os.RemoveAll(scratch)
-		fallback.Dir = scratch
-		stderr.Reset()
-		fallback.Stderr = &stderr
-		b, err = fallback.Output()
-		if err != nil || strings.TrimSpace(string(b)) == "" || bytes.ContainsRune(b, 0) {
-			// Word 2.0 can be misread as raw text by textutil and is not reliably
-			// supported by wvWare. Try LibreOffice without writing beside the source.
-			office, lookupErr := exec.LookPath("soffice")
-			if lookupErr != nil {
-				office = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-				if _, statErr := os.Stat(office); statErr != nil {
-					office = ""
-				}
-			}
-			if office != "" {
-				profile := (&url.URL{Scheme: "file", Path: filepath.Join(scratch, "profile")}).String()
-				convert := exec.CommandContext(ctx, office, "-env:UserInstallation="+profile, "--headless", "--convert-to", "txt:Text", "--outdir", scratch, path)
-				convert.Dir = scratch
-				if output, convertErr := convert.CombinedOutput(); convertErr != nil {
-					return "", fmt.Errorf("legacy Word conversion: %w: %s", convertErr, strings.TrimSpace(string(output)))
-				}
-				outputPath := filepath.Join(scratch, strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+".txt")
-				b, err = os.ReadFile(outputPath)
-			} else if binaryOutput {
-				return "", fmt.Errorf("legacy Word converter returned binary text; install LibreOffice (brew install --cask libreoffice) or convert this file to DOCX")
-			}
-		}
+		return extractWordWithoutTextutil(ctx, path)
 	}
 	if err != nil {
 		return "", fmt.Errorf("extract text: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if bytes.ContainsRune(b, 0) {
+		return "", fmt.Errorf("converter returned binary data rather than document text")
+	}
+	return strings.TrimPrefix(string(b), "\ufeff"), nil
+}
+
+// extractWordWithoutTextutil supports Linux without requiring a macOS converter.
+func extractWordWithoutTextutil(ctx context.Context, path string) (string, error) {
+	if strings.EqualFold(filepath.Ext(path), ".doc") {
+		if tool, err := exec.LookPath("wvWare"); err == nil {
+			scratch, err := os.MkdirTemp("", "jar-word-*")
+			if err != nil {
+				return "", err
+			}
+			defer os.RemoveAll(scratch)
+			cmd := exec.CommandContext(ctx, tool, "-x", "wvText.xml", "-c", "UTF-8", "-1", path)
+			cmd.Dir = scratch
+			b, err := cmd.Output()
+			if err == nil && strings.TrimSpace(string(b)) != "" && !bytes.ContainsRune(b, 0) {
+				return strings.TrimPrefix(string(b), "\ufeff"), nil
+			}
+		}
+	}
+	return extractWithLibreOffice(ctx, path)
+}
+
+func extractWithLibreOffice(ctx context.Context, path string) (string, error) {
+	office, err := exec.LookPath("soffice")
+	if err != nil {
+		office, err = exec.LookPath("libreoffice")
+	}
+	if err != nil {
+		office = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+		if _, err := os.Stat(office); err != nil {
+			return "", fmt.Errorf("Word extraction requires LibreOffice: install libreoffice-writer on Debian/Ubuntu or brew install --cask libreoffice on macOS (wvWare also supports many DOC files)")
+		}
+	}
+	// Resolve relative inputs before changing the converter's working directory.
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	scratch, err := os.MkdirTemp("", "jar-word-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(scratch)
+	profile := (&url.URL{Scheme: "file", Path: filepath.Join(scratch, "profile")}).String()
+	cmd := exec.CommandContext(ctx, office, "-env:UserInstallation="+profile, "--headless", "--convert-to", "txt:Text", "--outdir", scratch, path)
+	cmd.Dir = scratch
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("Word conversion: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	outputPath := filepath.Join(scratch, strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))+".txt")
+	b, err := os.ReadFile(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("read converted Word text: %w", err)
 	}
 	if bytes.ContainsRune(b, 0) {
 		return "", fmt.Errorf("converter returned binary data rather than document text")
