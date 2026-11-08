@@ -19,7 +19,7 @@ EMBEDDING_MODEL ?= bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0
 DIMENSIONS ?= 768
 FORCE_INDEX ?= false
 DOCUMENT_WORKERS ?= 20
-EMBEDDING_WORKERS ?= 4
+EMBEDDING_WORKERS ?= 1
 EMBEDDING_BATCH_SIZE ?= 8
 EMBEDDING_BUFFER_BATCHES ?= 16
 INSERT_BATCH_SIZE ?= 128
@@ -214,7 +214,7 @@ help: ## Display this help
 	  '                   make index DOCS="/path/to/documents" EMBEDDING_MODEL="bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0"' \
 	  '  FORCE_INDEX      Default: false; FORCE_INDEX=true rebuilds unchanged data' \
 	  '  DOCUMENT_WORKERS Default: 20 converters; make index DOCS="/path/to/documents" DOCUMENT_WORKERS=20' \
-	  '  EMBEDDING_WORKERS Default: 4; make index DOCS="/path/to/documents" EMBEDDING_WORKERS=4' \
+	  '  EMBEDDING_WORKERS Default: 1; make index DOCS="/path/to/documents" EMBEDDING_WORKERS=1' \
 	  '  EMBEDDING_BATCH_SIZE Default: 8; texts per embedding call' \
 	  '  EMBEDDING_BUFFER_BATCHES Default: 16; completed batches queued independently of workers' \
 	  '                   make remote-index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BUFFER_BATCHES=16' \

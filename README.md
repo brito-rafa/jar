@@ -211,7 +211,7 @@ Indexing processes documents and embedding requests concurrently, then writes re
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `DOCUMENT_WORKERS` | 20 | Documents processed at once |
-| `EMBEDDING_WORKERS` | 4 | Concurrent embedding requests |
+| `EMBEDDING_WORKERS` | 1 | Concurrent embedding requests |
 | `EMBEDDING_BATCH_SIZE` | 8 | Passages per embedding request |
 | `EMBEDDING_BUFFER_BATCHES` | 16 | Completed embedding batches buffered independently of worker count |
 | `INSERT_BATCH_SIZE` | 128 | Unique passages per database insert |
@@ -267,7 +267,7 @@ make metadata
 
 ## Indexing benchmarks
 
-Local worker/batch benchmark results, when available, are saved under the Git-ignored `benchmarks/` directory. The defaults are 20 document workers, 4 embedding workers, embedding batches of 8, and insert batches of 128. Increasing workers does not guarantee faster indexing; compare settings on your own corpus.
+Local worker/batch benchmark results, when available, are saved under the Git-ignored `benchmarks/` directory. The defaults are 20 document workers, 1 embedding worker, embedding batches of 8, a buffer of 16 completed batches, and insert batches of 128. Increasing workers does not guarantee faster indexing; compare settings on your own corpus.
 
 ## Local database storage
 

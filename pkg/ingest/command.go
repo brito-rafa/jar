@@ -25,7 +25,7 @@ func Run(args []string) error {
 	remoteEmbeddingModel := f.String("remote-embedding-model", "", "Remote embedding API model ID; must implement embedding-model")
 	dimensions := f.Int("dimensions", 768, "Values per embedding vector; must match the model output (Granite 278M: 768)")
 	documentWorkers := f.Int("document-workers", 20, "Concurrent document converters (1-64)")
-	embeddingWorkers := f.Int("embedding-workers", 4, "Concurrent embedding request workers (1-8)")
+	embeddingWorkers := f.Int("embedding-workers", 1, "Concurrent embedding request workers (1-8)")
 	embeddingBatch := f.Int("embedding-batch-size", 8, "Texts per embedding request (1-128)")
 	embeddingBuffer := f.Int("embedding-buffer-batches", 16, "Completed embedding batches buffered independently of workers (1-1024)")
 	insertBatch := f.Int("insert-batch-size", 128, "Rows per database insert (1-512)")
