@@ -14,6 +14,7 @@ import (
 	"github.com/brito-rafa/jar/pkg/inference"
 	"io"
 	"strings"
+	"time"
 )
 
 // Run queries an existing remote index; it never extracts or indexes files.
@@ -91,6 +92,9 @@ func Run(args []string) error {
 		reply, err := session.handle(context.Background(), line)
 		if err != nil {
 			fmt.Println("ERROR:", err)
+			if reply.Timing != nil {
+				fmt.Println(reply.Timing)
+			}
 			continue
 		}
 		for _, warning := range reply.Warnings {
@@ -98,6 +102,9 @@ func Run(args []string) error {
 		}
 		if reply.Text != "" {
 			fmt.Println(reply.Text)
+		}
+		if reply.Timing != nil {
+			fmt.Println(reply.Timing)
 		}
 		if reply.Quit {
 			return nil
@@ -130,7 +137,11 @@ func vectorSearch(ctx context.Context, krnEmbed inference.Embedder, db *sql.DB, 
 		"truncate": true,
 	}
 
+	embeddingStart := time.Now()
 	resp, err := krnEmbed.Embeddings(ctx, d)
+	if metrics := timingFrom(ctx); metrics != nil {
+		metrics.EmbeddingMS += milliseconds(time.Since(embeddingStart))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
@@ -139,7 +150,11 @@ func vectorSearch(ctx context.Context, krnEmbed inference.Embedder, db *sql.DB, 
 		return nil, fmt.Errorf("empty query vector")
 	}
 
+	searchStart := time.Now()
 	docs, err := duck.Search(db, resp.Data[0].Embedding, 30, scope)
+	if metrics := timingFrom(ctx); metrics != nil {
+		metrics.SearchMS += milliseconds(time.Since(searchStart))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("error searching database: %w", err)
 	}

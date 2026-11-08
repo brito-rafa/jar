@@ -23,9 +23,17 @@ function showRetrieval(progress){
  vectorResults.scrollTop=0;
 }
 
+function showTiming(article,timing){
+ if(!timing)return;
+ const seconds=value=>((value||0)/1000).toFixed(3)+'s';
+ const line=document.createElement('div');line.className='query-timing';
+ line.textContent=`Timing: total ${seconds(timing.totalMs)} · Embedding ${seconds(timing.embeddingMs)} · Vector search ${seconds(timing.searchMs)} · Retrieval ${seconds(timing.retrievalMs)} · Generation ${seconds(timing.generationMs)} (${timing.generationAttempts} attempts) · Validation ${seconds(timing.validationMs)}`;
+ article.append(line);
+}
 function showResult(result){
  if(result.text){
   const article=add(result.text,'assistant');
+  showTiming(article,result.timing);
   if(result.downloadName){const link=document.createElement('a'),url=URL.createObjectURL(new Blob([result.downloadText||result.text],{type:'text/plain;charset=utf-8'}));downloadURLs.push(url);link.href=url;link.download=result.downloadName;link.className='download';link.textContent=result.downloadName.startsWith('reference-')?'Download reference and context (.txt)':'Download conference text (.txt)';article.insertBefore(link,article.childNodes[1]);}
  }
  for(const warning of result.warnings||[])add(warning,'warning');
@@ -50,14 +58,14 @@ async function submit(text){
   const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/x-ndjson'},body:JSON.stringify({message:text})});
   if(!response.ok)throw new Error(await response.text());
   await readEvents(response,event=>{
-   if(event.type==='error')throw new Error(event.error);
+   if(event.type==='error'){const error=new Error(event.error);error.timing=event.timing;throw error;}
    if(event.type==='progress'){
     showRetrieval(event.progress);
    }
    if(event.type==='result'){receivedResult=true;showResult(event.result);if(text.trim()==='/reset'||event.result.quit){vectorPanel.hidden=true;vectorResults.textContent='';}}
   });
   if(!receivedResult)throw new Error('The connection closed before the answer completed.');
- }catch(error){add(error.message,'error');status.textContent='Request failed. You can retry.';}
+ }catch(error){const article=add(error.message,'error');showTiming(article,error.timing);status.textContent='Request failed. You can retry.';}
  finally{setBusy(false);input.focus({preventScroll:true});}
 }
 form.addEventListener('submit',async event=>{event.preventDefault();await completionTask;submit(input.value);});

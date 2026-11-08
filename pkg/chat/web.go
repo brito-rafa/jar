@@ -125,7 +125,7 @@ func webHandlerPolicy(session webBackend, publicURL string, allowAnyHost bool) h
 					reply, err = session.handle(ctx, body.Message)
 				}
 				if err != nil {
-					send(map[string]any{"type": "error", "error": err.Error()})
+					send(map[string]any{"type": "error", "error": err.Error(), "timing": reply.Timing})
 					return
 				}
 				send(map[string]any{"type": "result", "result": reply})
@@ -133,7 +133,9 @@ func webHandlerPolicy(session webBackend, publicURL string, allowAnyHost bool) h
 			}
 			reply, err := session.handle(r.Context(), body.Message)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				jsonReply(w, map[string]any{"error": err.Error(), "timing": reply.Timing})
 				return
 			}
 			jsonReply(w, reply)

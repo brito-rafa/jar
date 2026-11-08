@@ -31,14 +31,15 @@ type chatSession struct {
 	generate          func(context.Context, []model.D) (string, error)
 }
 type chatReply struct {
-	Warnings     []string `json:"warnings,omitempty"`
-	DownloadText string   `json:"downloadText,omitempty"`
-	DownloadName string   `json:"downloadName,omitempty"`
-	Text         string   `json:"text"`
-	Quit         bool     `json:"quit"`
-	Scope        string   `json:"scope"`
-	Language     string   `json:"language"`
-	References   []int    `json:"references"`
+	Timing       *QueryTiming `json:"timing,omitempty"`
+	Warnings     []string     `json:"warnings,omitempty"`
+	DownloadText string       `json:"downloadText,omitempty"`
+	DownloadName string       `json:"downloadName,omitempty"`
+	Text         string       `json:"text"`
+	Quit         bool         `json:"quit"`
+	Scope        string       `json:"scope"`
+	Language     string       `json:"language"`
+	References   []int        `json:"references"`
 }
 
 func newChatSession(db *sql.DB, embed inference.Embedder, chat inference.ChatModel) *chatSession {
@@ -83,7 +84,8 @@ func (s *chatSession) reply(text string, quit bool) chatReply {
 func (s *chatSession) handle(ctx context.Context, input string) (chatReply, error) {
 	return s.handleProgress(ctx, input, nil)
 }
-func (s *chatSession) handleProgress(ctx context.Context, input string, emit func(chatProgress)) (chatReply, error) {
+func (s *chatSession) handleProgress(ctx context.Context, input string, emit func(chatProgress)) (reply chatReply, resultErr error) {
+	requestStart := time.Now()
 	report := func(p chatProgress) {
 		if emit != nil {
 			emit(p)
@@ -151,12 +153,17 @@ func (s *chatSession) handleProgress(ctx context.Context, input string, emit fun
 		}
 		return s.reply(text, false), err
 	}
+	metrics := &QueryTiming{}
+	ctx = context.WithValue(ctx, timingContextKey{}, metrics)
+	defer func() { metrics.TotalMS = milliseconds(time.Since(requestStart)); reply.Timing = metrics }()
 	s.refs.set(nil)
 	s.referenceLanguage = ""
 	// Keep history unchanged when a query fails or has no matching passages.
 	messages := append(append([]model.D(nil), s.messages...), model.TextMessage("user", input))
 	report(chatProgress{Stage: "searching"})
+	retrievalStart := time.Now()
 	docs, err := s.search(ctx, messages, s.scope, s.language)
+	metrics.RetrievalMS = milliseconds(time.Since(retrievalStart))
 	if err != nil {
 		return chatReply{}, err
 	}
@@ -164,12 +171,17 @@ func (s *chatSession) handleProgress(ctx context.Context, input string, emit fun
 	if len(docs) == 0 {
 		return s.reply("No matching passages were found in the current search scope.", false), nil
 	}
+	validationStart := time.Now()
 	answer, sources, warnings, err := groundedAnswer(docs, messages, func(m []model.D) (string, error) {
 		report(chatProgress{Stage: "generating"})
+		generationStart := time.Now()
+		metrics.GenerationAttempts++
 		answer, err := s.generate(ctx, m)
+		metrics.GenerationMS += milliseconds(time.Since(generationStart))
 		report(chatProgress{Stage: "validating"})
 		return answer, err
 	}, s.language)
+	metrics.ValidationMS = max(0, milliseconds(time.Since(validationStart))-metrics.GenerationMS)
 	if err != nil && !errors.Is(err, errCitationValidation) {
 		return chatReply{}, err
 	}
@@ -179,7 +191,7 @@ func (s *chatSession) handleProgress(ctx context.Context, input string, emit fun
 	s.refs.set(sources)
 	s.referenceLanguage = effectiveLanguage(input, s.language)
 	s.messages = append(messages, model.TextMessage("assistant", answer))
-	reply := s.reply(out.String(), false)
+	reply = s.reply(out.String(), false)
 	reply.Warnings = warnings
 	return reply, nil
 }
