@@ -12,7 +12,7 @@ With Go 1.27.3+, a C compiler, and Docker Desktop running (see [Requirements](#r
 ```bash
 git clone https://github.com/brito-rafa/jar.git
 cd jar
-make db-up
+make local-db-up
 make index DOCS="/absolute/path/to/your/documents"
 make status
 make chat-web
@@ -81,12 +81,12 @@ At startup, the indexer extracts the corpus and fingerprints its text and embedd
 
 `make` uses `config/manifests/compose/compose.yaml` with the repository root as the Compose project directory, preserving relative mount paths and the project name.
 
-Make creates `DB_DATA_DIR` automatically if it is missing, including parent directories. Empty paths, existing files, and directories that cannot be created cause setup to fail. `make db-up` creates a private, ignored `.env` with a random token and waits for the database health check. The service publishes **127.0.0.1:9494** and bind-mounts the project’s `./data` directory to `/data`, so the database is stored at **`./data/jar.db` on your Mac**. Its write-ahead log is stored alongside it. `DB_DATA_DIR` can select another host directory. Change `DB_PORT` in `.env` and rerun `make db-up` to select a different host port.
+Make creates `DB_DATA_DIR` automatically if it is missing, including parent directories. Empty paths, existing files, and directories that cannot be created cause setup to fail. `make local-db-up` creates a private, ignored `.env` with a random token and waits for the database health check. The service publishes **127.0.0.1:9494** and bind-mounts the project’s `./data` directory to `/data`, so the database is stored at **`./data/jar.db` on your Mac**. Its write-ahead log is stored alongside it. `DB_DATA_DIR` can select another host directory. Change `DB_PORT` in `.env` and rerun `make local-db-up` to select a different host port.
 
 ```bash
-make db-logs                    # Follow database logs
-make db-down                    # Stop the service, preserving its local database file
-make db-up                      # Start again with stored data intact
+make local-db-logs                    # Follow database logs
+make local-db-down                    # Stop the service, preserving its local database file
+make local-db-up                      # Start again with stored data intact
 ```
 
 Do not delete `jar.db` or its WAL unless you intend to erase the index. `.env` contains the authentication token: do not commit it. Keep the same token for both the server and application commands. The default connection is plain HTTP over loopback TCP; access from another machine requires deliberate port/TLS configuration. The single-user token permits SQL access; chat only issues read queries, but it is not a separate server-enforced read-only role.
@@ -94,22 +94,30 @@ Do not delete `jar.db` or its WAL unless you intend to erase the index. `.env` c
 To choose another directory, set `DB_DATA_DIR=/absolute/path/to/database` in `.env`, or run:
 
 ```bash
-make db-up DB_DATA_DIR="/absolute/path/to/database"
+make local-db-up DB_DATA_DIR="/absolute/path/to/database"
 ```
 
-Keep the same directory for later database commands. `make db-check` creates it if needed without starting Docker. `db-init`, `db-up`, `db-start`, and `db-reset` run this check before proceeding. Running Compose directly requires the directory to exist.
+Keep the same directory for later database commands. `make local-db-check` creates it if needed without starting Docker. `local-db-init`, `local-db-up`, `local-db-start`, and `local-db-reset` run this check before proceeding. Running Compose directly requires the directory to exist.
 
 ## Reset and erase the database
 
 To permanently erase the local database and start with an empty index:
 
 ```bash
-make db-reset CONFIRM=erase
+make local-db-reset CONFIRM=erase
 ```
 
 Without `CONFIRM=erase`, the command refuses to proceed. Stop indexing and chat first. This deletes only **`jar.db` and `jar.db.wal` inside `DB_DATA_DIR`**, including their stored passages, embeddings, and index metadata, then restarts DuckDB. Training files, backups, source documents, and the rest of `data/` are preserved. Run `make index DOCS="/path/to/documents"` afterwards to rebuild the index.
 
-The token in `.env`, source documents, cached models, training files, and database backups are preserved. This target resets the local Compose service, regardless of a `DB_URL` override; it does not erase an arbitrary remote endpoint. Normal `make db-down` preserves data.
+The token in `.env`, source documents, cached models, training files, and database backups are preserved. This target resets the local Compose service, regardless of a `DB_URL` override; it does not erase an arbitrary remote endpoint. Normal `make local-db-down` preserves data.
+
+To erase only the JAR index on the configured remote server:
+
+```bash
+make remote-db-reset CONFIRM=erase
+```
+
+This requires `remote-db` and `remote-db-token`, connects directly to that endpoint, and transactionally drops JAR's `items`, `item_sources`, and `jar_index_metadata` tables. Unrelated tables, the server process, and local files are preserved. It does not require model endpoints or load models. Stop indexing and chat before resetting, then rebuild with `make remote-index DOCS="/path/to/documents"`.
 
 ## Connection and model settings
 
@@ -300,3 +308,32 @@ This opt-in test loads the local chat model; ordinary tests do not.
 ## Attribution and license
 
 Adapted from Kronk's `examples/rag/main.go` and `examples/rag/duck` at revision `50ace045`. The standalone application adds configurable models, recursive document extraction, safe database insertion, separate index/chat commands, and containerized remote storage. Adapted code is distributed under Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Remote connectivity
+
+Set the following keys in the ignored `.env` file:
+
+```dotenv
+remote-embedding=100.74.54.18:8081
+remote-chat=100.74.54.18:8080
+remote-db=100.74.54.18:9494
+remote-db-token=<remote-server-token>
+```
+
+Run `make check-connectivity` or `./hack/check-connectivity.sh` to check every configured service. The script reads the repository’s `.env` regardless of the current working directory; explicit `JAR_REMOTE_*` environment values take precedence (including empty values to skip a service). Empty endpoints are skipped; failures return a nonzero exit code. Python 3 is required. Granite is checked with a small multilingual embedding request, Ministral through its model-list endpoint and a short chat completion (up to 32 tokens, with a 60-second timeout), and DuckDB through a TCP connection. The generation check reports total request time and, when the server supplies completion-token usage, tokens per second. This includes network and prompt-processing time. The TCP check does not validate the DuckDB token; `make status` validates the authenticated database connection without changing data.
+
+For a remote DuckDB server intentionally serving plain HTTP, set `remote-db-disable-ssl=true` (default `false`). Direct CLI calls can use `--db-disable-ssl`. This sends the database token without application TLS; use it only over a trusted encrypted network. If using Tailscale, traffic between peers is encrypted by the Tailscale connection.
+
+`remote-db` selects the remote database for index, chat, metadata, and status; its token stays separate from the local Docker token. Local file details in `make status` still describe `DB_DATA_DIR`. `make remote-index DOCS="/path/to/documents"` uses remote embeddings and the remote database. `make remote-chat` opens web chat using both remote models and the remote database. Both require all four remote settings and run `check-connectivity` first; any failed check prevents the application from starting. `make status` uses `remote-db` when configured. Ordinary `make index` and `make chat` retain local Kronk inference. Fully remote runs skip local model downloads and Metal initialization.
+
+Optional `remote-chat-model` and `remote-embedding-model` select API model IDs. If omitted, each endpoint must advertise exactly one model via `/v1/models`. For direct CLI use, pass `--remote-chat`, `--remote-embedding`, and optionally `--remote-chat-model` / `--remote-embedding-model`; the indexer accepts only the embedding flags. An empty endpoint retains local inference. Remote failures are reported without automatic local fallback.
+
+Indexing installs and loads the VSS extension on the connected DuckDB server before creating the index. The server needs extension-download access on first use; installing VSS on the client alone does not provision the server.
+
+`EMBEDDING_MODEL` remains the canonical identity stored with the index; the remote API alias is separate. The remote embedding server must serve that exact model with the same preprocessing and dimensions. JAR checks vector sizes; it cannot prove that an API alias serves identical weights. Changing the embedding model requires rebuilding the index. Existing batching, deduplication, citations and reference translations apply to both providers.
+
+Make bridges these hyphenated keys to `JAR_REMOTE_EMBEDDING`, `JAR_REMOTE_CHAT`, `JAR_REMOTE_DB`, and `JAR_REMOTE_DB_TOKEN` for child processes. Do not source `.env` as a shell script.
+
+Loading reports embedding batch-request latency (average/maximum and failures), insert-call latency, elapsed time, written chunks per second, and result-queue wait summed across workers. Embedding latency includes network, server queueing and any token-limit recovery; insert latency includes serialization and source-metadata writes. These are client timings, not GPU kernel timings. Progress is provisional until the transaction commits; a failed load rolls back its writes. Metrics are also printed on failure.
+
+For llama.cpp servers reporting a structured context-limit error, JAR retries embedding requests using the server tokenizer and token arrays truncated to the reported limit, retaining boundary special tokens. Original indexed text is unchanged. Other HTTP errors fail with their status and structured error type; server response text and document content are not logged. Servers without a compatible tokenizer must accept the input length or require smaller document passages.

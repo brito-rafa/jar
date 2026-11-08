@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
 	"github.com/brito-rafa/jar/pkg/connection"
 	"github.com/brito-rafa/jar/pkg/duck"
 	"github.com/brito-rafa/jar/pkg/inference"
@@ -22,6 +21,8 @@ func Run(args []string) error {
 	c.Register(f)
 	docs := f.String("docs", "", "Semicolon-separated directories to import recursively (.doc/.docx/.pdf/.txt)")
 	embedding := f.String("embedding-model", inference.DefaultEmbedding, "Embedding model used for documents and questions")
+	remoteEmbedding := f.String("remote-embedding", "", "Remote OpenAI-compatible embedding endpoint; empty uses Kronk")
+	remoteEmbeddingModel := f.String("remote-embedding-model", "", "Remote embedding API model ID; must implement embedding-model")
 	dimensions := f.Int("dimensions", 768, "Values per embedding vector; must match the model output (Granite 278M: 768)")
 	documentWorkers := f.Int("document-workers", 20, "Concurrent document converters (1-64)")
 	embeddingWorkers := f.Int("embedding-workers", 4, "Concurrent embedding request workers (1-8)")
@@ -29,12 +30,20 @@ func Run(args []string) error {
 	insertBatch := f.Int("insert-batch-size", 128, "Rows per database insert (1-512)")
 	force := f.Bool("force", false, "Rebuild even if the corpus is unchanged (useful for worker comparisons)")
 	metadataOnly := f.Bool("metadata", false, "Build book/date metadata from stored filenames without re-embedding")
+	reset := f.Bool("reset", false, "Erase JAR index tables on the connected database; requires -confirm=erase")
+	confirm := f.String("confirm", "", "Explicit confirmation for -reset: erase")
 	statusOnly := f.Bool("status", false, "Show database status without reading documents or loading models")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if f.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
+	}
+	if *reset && (*statusOnly || *metadataOnly || *docs != "") {
+		return fmt.Errorf("-reset cannot be combined with -status, -metadata or -docs")
+	}
+	if *reset && *confirm != "erase" {
+		return fmt.Errorf("reset erases the connected JAR index; requires -confirm=erase")
 	}
 	if *dimensions <= 0 || *embedding == "" {
 		return fmt.Errorf("embedding-model and positive dimensions are required")
@@ -49,7 +58,7 @@ func Run(args []string) error {
 	if *metadataOnly && *statusOnly {
 		return fmt.Errorf("choose -metadata or -status")
 	}
-	if !*statusOnly && !*metadataOnly {
+	if !*statusOnly && !*metadataOnly && !*reset {
 		if _, err := documentDirectories(*docs); err != nil {
 			return err
 		}
@@ -60,6 +69,13 @@ func Run(args []string) error {
 		return err
 	}
 	defer db.Close()
+	if *reset {
+		if err := duck.Reset(db); err != nil {
+			return fmt.Errorf("reset JAR index: %w", err)
+		}
+		fmt.Println("JAR index erased; unrelated database tables preserved.")
+		return printStatus(db, c.Endpoint)
+	}
 	if *statusOnly {
 		return printStatus(db, c.Endpoint)
 	}
@@ -89,11 +105,7 @@ func Run(args []string) error {
 		fmt.Println("Index unchanged; reusing stored embeddings.")
 		return printStatus(db, c.Endpoint)
 	}
-	info, _, err := inference.Install(*embedding, "")
-	if err != nil {
-		return err
-	}
-	krn, err := inference.New(info, model.WithNSeqMax(*embeddingWorkers))
+	krn, err := inference.OpenEmbedding(context.Background(), *embedding, *remoteEmbedding, *remoteEmbeddingModel, *embeddingWorkers)
 	if err != nil {
 		return err
 	}

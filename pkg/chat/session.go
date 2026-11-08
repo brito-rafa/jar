@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk"
 	"github.com/ardanlabs/kronk/sdk/kronk/model"
 	"github.com/brito-rafa/jar/pkg/catalog"
 	"github.com/brito-rafa/jar/pkg/duck"
+	"github.com/brito-rafa/jar/pkg/inference"
 )
 
 // One local conversation, shared by browser tabs; the HTTP layer serializes
@@ -41,7 +41,7 @@ type chatReply struct {
 	References   []int    `json:"references"`
 }
 
-func newChatSession(db *sql.DB, embed, chat *kronk.Kronk) *chatSession {
+func newChatSession(db *sql.DB, embed inference.Embedder, chat inference.ChatModel) *chatSession {
 	return &chatSession{
 		refs:      &referenceStore{},
 		translate: translationModel(chat),

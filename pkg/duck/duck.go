@@ -10,13 +10,13 @@ import (
 	"github.com/brito-rafa/jar/pkg/catalog"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk"
 	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference"
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 // Index replaces the corpus transactionally on an already connected server.
-func Index(db *sqlpkg.DB, krn *kronk.Kronk, dimensions int, chunksFile, fingerprint, embeddingModel string, options ...LoadOptions) error {
+func Index(db *sqlpkg.DB, krn inference.Embedder, dimensions int, chunksFile, fingerprint, embeddingModel string, options ...LoadOptions) error {
 	opts := LoadOptions{EmbeddingWorkers: 1, EmbeddingBatchSize: 8, InsertBatchSize: 128}
 	if len(options) > 0 {
 		opts = options[0]
@@ -29,6 +29,10 @@ func Index(db *sqlpkg.DB, krn *kronk.Kronk, dimensions int, chunksFile, fingerpr
 
 	// -------------------------------------------------------------------------
 
+	// Provision VSS on the server, including remotely managed DuckDB instances.
+	if err := remoteExec(db, "INSTALL vss"); err != nil {
+		return fmt.Errorf("install server VSS (server needs extension download access): %w", err)
+	}
 	if err := remoteExec(db, "LOAD vss"); err != nil {
 		return fmt.Errorf("load server VSS: %w", err)
 	}
@@ -116,7 +120,7 @@ func Index(db *sqlpkg.DB, krn *kronk.Kronk, dimensions int, chunksFile, fingerpr
 	return nil
 }
 
-func loadChunks(db *sqlpkg.DB, krn *kronk.Kronk, file string, dimensions int, opts LoadOptions) error {
+func loadChunks(db *sqlpkg.DB, krn inference.Embedder, file string, dimensions int, opts LoadOptions) error {
 	passages, duplicates, err := uniquePassages(file)
 	if err != nil {
 		return err

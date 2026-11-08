@@ -87,6 +87,55 @@ func uniquePassages(file string) ([]passage, int, error) {
 type embedFunc func(context.Context, []string) ([][]float32, error)
 type writeFunc func([]embeddedPassage) error
 
+type pipelineMetrics struct {
+	mu                                                              sync.Mutex
+	requests, failures, inserts                                     int
+	embeddingTotal, embeddingMax, insertTotal, insertMax, queueWait time.Duration
+}
+
+func (m *pipelineMetrics) embedding(elapsed time.Duration, failed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests++
+	m.embeddingTotal += elapsed
+	if elapsed > m.embeddingMax {
+		m.embeddingMax = elapsed
+	}
+	if failed {
+		m.failures++
+	}
+}
+func (m *pipelineMetrics) queue(elapsed time.Duration) {
+	m.mu.Lock()
+	m.queueWait += elapsed
+	m.mu.Unlock()
+}
+func (m *pipelineMetrics) insert(elapsed time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inserts++
+	m.insertTotal += elapsed
+	if elapsed > m.insertMax {
+		m.insertMax = elapsed
+	}
+}
+func (m *pipelineMetrics) report(written, total int, elapsed time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var embedAvg, insertAvg time.Duration
+	if m.requests > 0 {
+		embedAvg = m.embeddingTotal / time.Duration(m.requests)
+	}
+	if m.inserts > 0 {
+		insertAvg = m.insertTotal / time.Duration(m.inserts)
+	}
+	rate := 0.0
+	if elapsed > 0 {
+		rate = float64(written) / elapsed.Seconds()
+	}
+	fmt.Printf("Load metrics: %d/%d written (pending commit); elapsed %.1fs; %.2f chunks/s | embedding requests %d, failed %d, avg %.3fs, max %.3fs | insert calls %d, avg %.3fs, max %.3fs, total %.3fs | result-queue wait %.3fs (summed across workers)\n", written, total, elapsed.Seconds(), rate, m.requests, m.failures, embedAvg.Seconds(), m.embeddingMax.Seconds(), m.inserts, insertAvg.Seconds(), m.insertMax.Seconds(), m.insertTotal.Seconds(), m.queueWait.Seconds())
+}
+
 // A bounded embedding pool overlaps GPU work with a single transactional writer.
 // On errors, cancel and join every worker before the model can be unloaded.
 func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embed embedFunc, write writeFunc) error {
@@ -95,6 +144,10 @@ func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embe
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	started := time.Now()
+	var metrics pipelineMetrics
+	written := 0
+	defer func() { metrics.report(written, len(passages), time.Since(started)) }()
 	jobs := make(chan []passage, opts.EmbeddingWorkers)
 	type result struct {
 		rows []embeddedPassage
@@ -123,7 +176,12 @@ func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embe
 				for i, p := range batch {
 					texts[i] = p.Text
 				}
+				requestStart := time.Now()
 				vectors, err := embed(ctx, texts)
+				metrics.embedding(time.Since(requestStart), err != nil)
+				if err != nil {
+					err = fmt.Errorf("embed chunk batch starting at %d (%d chunks): %w", batch[0].ID, len(batch), err)
+				}
 				r := result{err: err}
 				if err == nil && len(vectors) != len(batch) {
 					r.err = fmt.Errorf("embedding response count %d does not match %d passages", len(vectors), len(batch))
@@ -137,8 +195,10 @@ func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embe
 						r.rows = append(r.rows, embeddedPassage{p, vectors[i]})
 					}
 				}
+				queueStart := time.Now()
 				select {
 				case results <- r:
+					metrics.queue(time.Since(queueStart))
 				case <-ctx.Done():
 					return
 				}
@@ -151,10 +211,12 @@ func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embe
 	go func() { wg.Wait(); close(results) }()
 	var firstErr error
 	var pending []embeddedPassage
-	written := 0
 	lastProgress := time.Now()
 	flush := func(n int) {
-		if err := write(pending[:n]); err != nil {
+		insertStart := time.Now()
+		err := write(pending[:n])
+		metrics.insert(time.Since(insertStart))
+		if err != nil {
 			firstErr = err
 			cancel()
 			return
@@ -164,6 +226,7 @@ func runPipeline(ctx context.Context, passages []passage, opts LoadOptions, embe
 		if time.Since(lastProgress) >= 500*time.Millisecond || written == len(passages) {
 			fmt.Printf("Indexed %d of %d unique chunks\n", written, len(passages))
 			lastProgress = time.Now()
+			metrics.report(written, len(passages), time.Since(started))
 		}
 	}
 	for r := range results {

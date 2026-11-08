@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/ardanlabs/kronk/sdk/kronk"
 	"github.com/ardanlabs/kronk/sdk/kronk/model"
 	"github.com/brito-rafa/jar/pkg/connection"
 	"github.com/brito-rafa/jar/pkg/duck"
@@ -28,6 +27,10 @@ func Run(args []string) error {
 	port := f.Int("port", 8080, "Browser chat TCP port (1-65535)")
 	publicURL := f.String("public-url", "", "Allowed external HTTP(S) origin for a reverse proxy")
 	openBrowser := f.Bool("open-browser", false, "Open the browser after the web server starts")
+	remoteChat := f.String("remote-chat", "", "Remote OpenAI-compatible chat endpoint; empty uses Kronk")
+	remoteEmbedding := f.String("remote-embedding", "", "Remote embedding endpoint; empty uses Kronk")
+	remoteChatModel := f.String("remote-chat-model", "", "Remote chat API model ID; otherwise discover the sole advertised model")
+	remoteEmbeddingModel := f.String("remote-embedding-model", "", "Remote embedding API model ID; must match the indexed embedding model")
 	chat := f.String("chat-model", inference.DefaultChat, "Chat model for answering retrieved questions")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -56,20 +59,17 @@ func Run(args []string) error {
 	if !state.Ready || state.Chunks == 0 {
 		return fmt.Errorf("database has no ready JAR index; run jar-index first")
 	}
-	infoEmbed, infoChat, err := inference.Install(state.EmbeddingModel, *chat)
-	if err != nil {
-		return err
-	}
-	krnEmbed, err := inference.New(infoEmbed)
+	krnEmbed, err := inference.OpenEmbedding(context.Background(), state.EmbeddingModel, *remoteEmbedding, *remoteEmbeddingModel, 1)
 	if err != nil {
 		return err
 	}
 	defer krnEmbed.Unload(context.Background())
-	krnChat, err := inference.New(infoChat)
+	krnChat, err := inference.OpenChat(context.Background(), *chat, *remoteChat, *remoteChatModel)
 	if err != nil {
 		return err
 	}
 	defer krnChat.Unload(context.Background())
+
 	session := newChatSession(db, krnEmbed, krnChat)
 	if *web {
 		return serveWeb(session, *port, *openBrowser, *publicURL, *host, *allowAnyHost)
@@ -122,11 +122,12 @@ func userInput(reader *bufio.Reader, messages []model.D) ([]model.D, error) {
 	return messages, nil
 }
 
-func vectorSearch(ctx context.Context, krnEmbed *kronk.Kronk, db *sql.DB, messages []model.D, scope duck.SourceFilter, language ...string) ([]duck.Document, error) {
+func vectorSearch(ctx context.Context, krnEmbed inference.Embedder, db *sql.DB, messages []model.D, scope duck.SourceFilter, language ...string) ([]duck.Document, error) {
 	fmt.Print("\n--- Vector Search ---\n\n")
 
 	d := model.D{
-		"input": messages[len(messages)-1]["content"].(string),
+		"input":    messages[len(messages)-1]["content"].(string),
+		"truncate": true,
 	}
 
 	resp, err := krnEmbed.Embeddings(ctx, d)
@@ -178,7 +179,7 @@ Question: %s`
 	return result
 }
 
-func performChat(ctx context.Context, krn *kronk.Kronk, d model.D) (<-chan model.ChatResponse, error) {
+func performChat(ctx context.Context, krn inference.ChatModel, d model.D) (<-chan model.ChatResponse, error) {
 	ch, err := krn.ChatStreaming(ctx, d)
 	if err != nil {
 		return nil, fmt.Errorf("chat streaming: %w", err)

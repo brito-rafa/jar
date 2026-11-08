@@ -7,8 +7,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/ardanlabs/kronk/sdk/kronk"
 	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference"
 )
 
 // Chunk without dropping source bytes. Bounded inputs prevent a full book from
@@ -72,7 +72,7 @@ func translateReference(ctx context.Context, text, language string, translate fu
 	}
 	return strings.Join(result, "\n\n"), warnings, nil
 }
-func translationModel(chat *kronk.Kronk) func(context.Context, string, string) (string, error) {
+func translationModel(chat inference.ChatModel) func(context.Context, string, string) (string, error) {
 	return func(ctx context.Context, text, lang string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		defer cancel()

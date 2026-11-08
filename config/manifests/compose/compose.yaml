@@ -3,7 +3,7 @@ services:
     image: duckdb/duckdb:2.0.0
     command: ["/duckdb", "/data/jar.db", "-bail", "-init", "/app/duckdb.sql", "-serve"]
     environment:
-      JAR_DB_TOKEN: ${JAR_DB_TOKEN:?Run make db-init first}
+      JAR_DB_TOKEN: ${JAR_DB_TOKEN:?Run make local-db-init first}
     ports:
       - "127.0.0.1:${DB_PORT:-9494}:9494"
     volumes:

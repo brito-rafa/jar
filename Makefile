@@ -22,36 +22,88 @@ DOCUMENT_WORKERS ?= 20
 EMBEDDING_WORKERS ?= 4
 EMBEDDING_BATCH_SIZE ?= 8
 INSERT_BATCH_SIZE ?= 128
+# Hyphenated .env keys are bridged to portable process environment names.
+remote-db ?=
+remote-db-disable-ssl ?= false
+export JAR_REMOTE_DB_DISABLE_SSL = $(remote-db-disable-ssl)
+remote-db-token ?=
+remote-chat ?=
+remote-embedding ?=
+export JAR_REMOTE_DB = $(remote-db)
+export JAR_REMOTE_DB_TOKEN = $(remote-db-token)
+export JAR_REMOTE_CHAT = $(remote-chat)
+export JAR_REMOTE_EMBEDDING = $(remote-embedding)
+ifneq ($(strip $(remote-db)),)
+DB_URL := quack:$(patsubst quack:%,%,$(remote-db))
+endif
+
+.PHONY: check-connectivity
+check-connectivity: ## Check configured remote Granite, Ministral and DuckDB services
+	@/bin/sh "$(CURDIR)/hack/check-connectivity.sh"
+
+remote-chat-model ?=
+remote-embedding-model ?=
+export REMOTE_CHAT_MODEL = $(remote-chat-model)
+export REMOTE_EMBEDDING_MODEL = $(remote-embedding-model)
+
+.PHONY: remote-config remote-index remote-chat
+remote-config:
+	@test -n "$$JAR_REMOTE_DB" && test -n "$$JAR_REMOTE_DB_TOKEN" && test -n "$$JAR_REMOTE_CHAT" && test -n "$$JAR_REMOTE_EMBEDDING" || { echo 'ERROR: Set remote-db, remote-db-token, remote-chat and remote-embedding in .env.' >&2; exit 2; }
+
+remote-index: ## Check remote services, then index DOCS with remote embeddings and database
+	@/bin/sh "$(CURDIR)/hack/check-docs.sh"
+	@$(MAKE) --no-print-directory remote-config
+	@$(MAKE) --no-print-directory check-connectivity
+	$(GO) run ./cmd/jar-index -docs "$$DOCS" -db-url "$$DB_URL" \
+		-remote-embedding "$$JAR_REMOTE_EMBEDDING" -remote-embedding-model "$$REMOTE_EMBEDDING_MODEL" \
+		-embedding-model "$$EMBEDDING_MODEL" -dimensions "$$DIMENSIONS" \
+		-force="$$FORCE_INDEX" -document-workers "$$DOCUMENT_WORKERS" -embedding-workers "$$EMBEDDING_WORKERS" \
+		-embedding-batch-size "$$EMBEDDING_BATCH_SIZE" -insert-batch-size "$$INSERT_BATCH_SIZE"
+
+remote-chat: ## Check remote services, then open web chat with remote chat, embeddings and database
+	@$(MAKE) --no-print-directory remote-config
+	@$(MAKE) --no-print-directory check-connectivity
+	$(GO) run ./cmd/jar-chat -db-url "$$DB_URL" -chat-model "$$CHAT_MODEL" \
+		-remote-chat "$$JAR_REMOTE_CHAT" -remote-chat-model "$$REMOTE_CHAT_MODEL" \
+		-remote-embedding "$$JAR_REMOTE_EMBEDDING" -remote-embedding-model "$$REMOTE_EMBEDDING_MODEL" \
+		-web -host "$$CHAT_HOST" -allow-any-host="$$CHAT_ALLOW_ANY_HOST" -public-url "$$CHAT_PUBLIC_URL" -port "$$CHAT_PORT" -open-browser="$$OPEN_BROWSER"
+
 export DB_DATA_DIR CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL CHAT_PORT OPEN_BROWSER FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE INSERT_BATCH_SIZE DOCS DB_URL CHAT_MODEL EMBEDDING_MODEL DIMENSIONS JAR_DB_TOKEN DB_PORT
 
 ##@ Database
-.PHONY: db-check db-init db-up db-start db-down db-logs db-reset
-db-check: ## Create DB_DATA_DIR if missing; reject empty paths or files
+.PHONY: local-db-check local-db-init local-db-up local-db-start local-db-down local-db-logs local-db-reset
+.PHONY: remote-db-reset
+remote-db-reset: ## ERASE remote JAR index tables; requires CONFIRM=erase
+	@test "$(CONFIRM)" = erase || { echo 'This erases the remote JAR index. Run: make remote-db-reset CONFIRM=erase' >&2; exit 2; }
+	@test -n "$$JAR_REMOTE_DB" && test -n "$$JAR_REMOTE_DB_TOKEN" || { echo 'ERROR: Set remote-db and remote-db-token in .env.' >&2; exit 2; }
+	$(GO) run ./cmd/jar-index -db-url "quack:$${JAR_REMOTE_DB#quack:}" -reset -confirm=erase
+
+local-db-check: ## Create DB_DATA_DIR if missing; reject empty paths or files
 	@test -n "$$(printf '%s' "$$DB_DATA_DIR" | tr -d '[:space:]')" || { echo 'ERROR: DB_DATA_DIR must be set to a directory.' >&2; exit 2; }
 	@mkdir -p "$$DB_DATA_DIR" || { printf 'ERROR: Cannot create DB_DATA_DIR: %s\n' "$$DB_DATA_DIR" >&2; exit 2; }
 
-db-init: db-check ## Create .env token; preserve settings; create DB_DATA_DIR
+local-db-init: local-db-check ## Create .env token; preserve settings; create DB_DATA_DIR
 	@if [ -e .env ]; then echo '.env already exists; keeping it'; else \
 		umask 077; set -C; { printf 'JAR_DB_TOKEN='; openssl rand -hex 32; printf 'DB_PORT=9494\n'; } > .env; \
 	fi
 
-db-up: db-init ## Start persistent DuckDB and wait for its TCP endpoint
-	@$(MAKE) --no-print-directory db-start
+local-db-up: local-db-init ## Start persistent DuckDB and wait for its TCP endpoint
+	@$(MAKE) --no-print-directory local-db-start
 
-db-start: db-check
+local-db-start: local-db-check
 	$(COMPOSE) up -d --wait --wait-timeout 90
 
-db-down: ## Stop DuckDB; keep the local database file
+local-db-down: ## Stop DuckDB; keep the local database file
 	$(COMPOSE) down
 
-db-logs: ## Follow DuckDB container logs
+local-db-logs: ## Follow DuckDB container logs
 	$(COMPOSE) logs -f duckdb
 
-db-reset: db-check ## ERASE local jar.db and its WAL; preserve training/backups; requires CONFIRM=erase
-	@test "$(CONFIRM)" = erase || { echo 'This erases jar.db and its WAL in DB_DATA_DIR. Run: make db-reset CONFIRM=erase' >&2; exit 2; }
+local-db-reset: local-db-check ## ERASE local jar.db and its WAL; preserve training/backups; requires CONFIRM=erase
+	@test "$(CONFIRM)" = erase || { echo 'This erases jar.db and its WAL in DB_DATA_DIR. Run: make local-db-reset CONFIRM=erase' >&2; exit 2; }
 	$(COMPOSE) down
 	@rm -f "$${DB_DATA_DIR:?DB_DATA_DIR is required}/jar.db" "$${DB_DATA_DIR:?DB_DATA_DIR is required}/jar.db.wal"
-	@$(MAKE) --no-print-directory db-up
+	@$(MAKE) --no-print-directory local-db-up
 
 ##@ Application
 .PHONY: index metadata status chat chat-web chat-terminal run build cli-help
@@ -105,28 +157,48 @@ vet: ## Run Go static analysis
 help: ## Display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z0-9_-]+:.*##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) }' $(MAKEFILE_LIST)
 	@printf '%s\n' '' 'Start:' \
-	  '  make db-up' \
+	  '  make local-db-up' \
 	  '  make index DOCS="/path/to/documents"' \
 	  '  make status' \
 	  '  make chat-web' \
 	  '  make chat-terminal  # optional terminal interface' '' \
-	  'Variables (examples explicitly set the defaults unless noted):' \
+	  'Remote setup (put these examples in ignored .env; endpoints have no default):' \
+	  '  remote-chat=100.74.54.18:8080' \
+	  '  remote-embedding=100.74.54.18:8081' \
+	  '  remote-db=100.74.54.18:9494' \
+	  '  remote-db-token=<your-remote-server-token>  # required; no default' \
+	  '  remote-db-disable-ssl=false  # default; true for plain HTTP over a trusted encrypted network' \
+	  '  remote-chat-model=          # default: discover the sole advertised model' \
+	  '  remote-embedding-model=     # default: discover the sole advertised model' '' \
+	  'Remote examples (requires the four endpoint/token settings above):' \
+	  '  make check-connectivity' \
+	  '  ./hack/check-connectivity.sh  # reads .env directly' \
+	  '  make remote-index DOCS="/path/one;/path/two"' \
+	  '  make remote-chat' \
+	  '  make remote-chat CHAT_PORT=8082 OPEN_BROWSER=false' \
+	  '  make remote-index DOCS="/path/to/documents" remote-embedding-model=granite-embedding' \
+	  '  make remote-db-reset CONFIRM=erase  # erases only remote JAR index tables' \
+	  '  make status  # uses remote-db when set; local file details still describe DB_DATA_DIR' \
+	  '  remote-index and remote-chat run connectivity checks first and stop on failure.' \
+	  '  index and chat keep local Kronk inference; remote targets use HTTP model APIs.' \
+	  '  EMBEDDING_MODEL and DIMENSIONS must match the actual remote embedding model.' '' \
+	  'Variables (examples explicitly set the defaults unless noted):'  \
 	  '  GO               Default: go' \
 	  '                   make build GO=go' \
 	  '  DOCKER           Default: docker' \
-	  '                   make db-up DOCKER=docker' \
+	  '                   make local-db-up DOCKER=docker' \
 	  '  DOCS             No default; semicolon-separated existing directories for indexing' \
 	  '                   make index DOCS="/path/one;/path/two"' \
 	  '                   make index DOCS="/path/to/documents"' \
 	  '  DB_DATA_DIR      Default: ./data; created by database setup; contains the bind-mounted jar.db' \
-	  '                   Set DB_DATA_DIR=/path/to/database in .env or make db-up DB_DATA_DIR=/path/to/database' \
+	  '                   Set DB_DATA_DIR=/path/to/database in .env or make local-db-up DB_DATA_DIR=/path/to/database' \
 	  '  DB_PORT          Default: 9494; publishes the local container on loopback' \
-	  '                   make db-up DB_PORT=9494' \
+	  '                   make local-db-up DB_PORT=9494' \
 	  '                   Set DB_PORT=9494 in .env to keep it across commands.' \
 	  '  DB_URL           Default: quack:127.0.0.1:$(DB_PORT), derived from DB_PORT' \
 	  '                   make chat DB_URL=quack:127.0.0.1:9494' \
 	  '                   Remote example: make chat DB_URL=quack:my-server:9494' \
-	  '  JAR_DB_TOKEN     No fixed default; make db-init generates it in .env' \
+	  '  JAR_DB_TOKEN     No fixed default; make local-db-init generates it in .env' \
 	  '                   Normally loaded automatically; do not paste tokens into commands.' \
 	  '                   To set manually, put JAR_DB_TOKEN=<your-token> in .env.' \
 	  '                   The container and clients must use the same token.' \

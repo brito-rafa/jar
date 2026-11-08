@@ -10,7 +10,7 @@ import (
 
 // OpenRemote creates an in-memory client attached to the Quack server.
 // One session is retained for the lifetime of a command.
-func OpenRemote(endpoint, token string) (*sql.DB, error) {
+func OpenRemote(endpoint, token string, disableSSL ...bool) (*sql.DB, error) {
 	if !strings.HasPrefix(endpoint, "quack:") {
 		return nil, fmt.Errorf("db-url must use the quack: scheme")
 	}
@@ -30,7 +30,11 @@ func OpenRemote(endpoint, token string) (*sql.DB, error) {
 		return nil, fmt.Errorf("load Quack client: %w", err)
 	}
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-	attach := "ATTACH " + quote(endpoint) + " AS jar_remote (TOKEN " + quote(token) + ")"
+	options := "TOKEN " + quote(token)
+	if len(disableSSL) > 0 && disableSSL[0] {
+		options += ", DISABLE_SSL true"
+	}
+	attach := "ATTACH " + quote(endpoint) + " AS jar_remote (" + options + ")"
 	if _, err := db.ExecContext(ctx, attach); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("connect to DuckDB endpoint %s: %s", endpoint, strings.ReplaceAll(strings.ReplaceAll(err.Error(), quote(token), "[redacted]"), token, "[redacted]"))
