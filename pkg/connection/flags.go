@@ -31,7 +31,7 @@ func (c Flags) Open() (*sql.DB, error) {
 		if value := os.Getenv("JAR_REMOTE_DB_DISABLE_SSL"); value != "" {
 			disable, err := strconv.ParseBool(value)
 			if err != nil {
-				return nil, fmt.Errorf("remote-db-disable-ssl must be true or false")
+				return nil, fmt.Errorf("REMOTE_DB_DISABLE_SSL must be true or false")
 			}
 			c.DisableSSL = c.DisableSSL || disable
 		}

@@ -23,33 +23,32 @@ EMBEDDING_WORKERS ?= 1
 EMBEDDING_BATCH_SIZE ?= 8
 EMBEDDING_BUFFER_BATCHES ?= 16
 INSERT_BATCH_SIZE ?= 128
-# Hyphenated .env keys are bridged to portable process environment names.
-remote-db ?=
-remote-db-disable-ssl ?= false
-export JAR_REMOTE_DB_DISABLE_SSL = $(remote-db-disable-ssl)
-remote-db-token ?=
-remote-chat ?=
-remote-embedding ?=
-export JAR_REMOTE_DB = $(remote-db)
-export JAR_REMOTE_DB_TOKEN = $(remote-db-token)
-export JAR_REMOTE_CHAT = $(remote-chat)
-export JAR_REMOTE_EMBEDDING = $(remote-embedding)
-ifneq ($(strip $(remote-db)),)
-DB_URL := quack:$(patsubst quack:%,%,$(remote-db))
+# Uppercase .env settings are bridged to application process environment names.
+REMOTE_DB ?=
+REMOTE_DB_DISABLE_SSL ?= false
+export JAR_REMOTE_DB_DISABLE_SSL = $(REMOTE_DB_DISABLE_SSL)
+REMOTE_DB_TOKEN ?=
+REMOTE_CHAT ?=
+REMOTE_EMBEDDING ?=
+export JAR_REMOTE_DB = $(REMOTE_DB)
+export JAR_REMOTE_DB_TOKEN = $(REMOTE_DB_TOKEN)
+export JAR_REMOTE_CHAT = $(REMOTE_CHAT)
+export JAR_REMOTE_EMBEDDING = $(REMOTE_EMBEDDING)
+ifneq ($(strip $(REMOTE_DB)),)
+DB_URL := quack:$(patsubst quack:%,%,$(REMOTE_DB))
 endif
 
 .PHONY: check-connectivity
 check-connectivity: ## Check configured remote Granite, Ministral and DuckDB services
 	@/bin/sh "$(CURDIR)/hack/check-connectivity.sh"
 
-remote-chat-model ?=
-remote-embedding-model ?=
-export REMOTE_CHAT_MODEL = $(remote-chat-model)
-export REMOTE_EMBEDDING_MODEL = $(remote-embedding-model)
+REMOTE_CHAT_MODEL ?=
+REMOTE_EMBEDDING_MODEL ?=
+export REMOTE_CHAT_MODEL REMOTE_EMBEDDING_MODEL
 
 .PHONY: remote-config remote-index remote-chat
 remote-config:
-	@test -n "$$JAR_REMOTE_DB" && test -n "$$JAR_REMOTE_DB_TOKEN" && test -n "$$JAR_REMOTE_CHAT" && test -n "$$JAR_REMOTE_EMBEDDING" || { echo 'ERROR: Set remote-db, remote-db-token, remote-chat and remote-embedding in .env.' >&2; exit 2; }
+	@test -n "$$JAR_REMOTE_DB" && test -n "$$JAR_REMOTE_DB_TOKEN" && test -n "$$JAR_REMOTE_CHAT" && test -n "$$JAR_REMOTE_EMBEDDING" || { echo 'ERROR: Set REMOTE_DB, REMOTE_DB_TOKEN, REMOTE_CHAT and REMOTE_EMBEDDING in .env.' >&2; exit 2; }
 
 remote-index: ## Check remote services, then index DOCS with remote embeddings and database
 	@/bin/sh "$(CURDIR)/hack/check-docs.sh"
@@ -76,7 +75,7 @@ export DB_DATA_DIR CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL CHAT_PORT OPEN_
 .PHONY: remote-db-reset
 remote-db-reset: ## ERASE remote JAR index tables; requires CONFIRM=erase
 	@test "$(CONFIRM)" = erase || { echo 'This erases the remote JAR index. Run: make remote-db-reset CONFIRM=erase' >&2; exit 2; }
-	@test -n "$$JAR_REMOTE_DB" && test -n "$$JAR_REMOTE_DB_TOKEN" || { echo 'ERROR: Set remote-db and remote-db-token in .env.' >&2; exit 2; }
+	@test -n "$$JAR_REMOTE_DB" && test -n "$$JAR_REMOTE_DB_TOKEN" || { echo 'ERROR: Set REMOTE_DB and REMOTE_DB_TOKEN in .env.' >&2; exit 2; }
 	$(GO) run ./cmd/jar-index -db-url "quack:$${JAR_REMOTE_DB#quack:}" -reset -confirm=erase
 
 local-db-check: ## Create DB_DATA_DIR if missing; reject empty paths or files
@@ -164,22 +163,22 @@ help: ## Display this help
 	  '  make chat-web' \
 	  '  make chat-terminal  # optional terminal interface' '' \
 	  'Remote setup (put these examples in ignored .env; endpoints have no default):' \
-	  '  remote-chat=100.74.54.18:8080' \
-	  '  remote-embedding=100.74.54.18:8081' \
-	  '  remote-db=100.74.54.18:9494' \
-	  '  remote-db-token=<your-remote-server-token>  # required; no default' \
-	  '  remote-db-disable-ssl=false  # default; true for plain HTTP over a trusted encrypted network' \
-	  '  remote-chat-model=          # default: discover the sole advertised model' \
-	  '  remote-embedding-model=     # default: discover the sole advertised model' '' \
+	  '  REMOTE_CHAT=100.74.54.18:8080' \
+	  '  REMOTE_EMBEDDING=100.74.54.18:8081' \
+	  '  REMOTE_DB=100.74.54.18:9494' \
+	  '  REMOTE_DB_TOKEN=<your-remote-server-token>  # required; no default' \
+	  '  REMOTE_DB_DISABLE_SSL=false  # default; true for plain HTTP over a trusted encrypted network' \
+	  '  REMOTE_CHAT_MODEL=          # default: discover the sole advertised model' \
+	  '  REMOTE_EMBEDDING_MODEL=     # default: discover the sole advertised model' '' \
 	  'Remote examples (requires the four endpoint/token settings above):' \
 	  '  make check-connectivity' \
 	  '  ./hack/check-connectivity.sh  # reads .env directly' \
 	  '  make remote-index DOCS="/path/one;/path/two"' \
 	  '  make remote-chat' \
 	  '  make remote-chat CHAT_PORT=8082 OPEN_BROWSER=false' \
-	  '  make remote-index DOCS="/path/to/documents" remote-embedding-model=granite-embedding' \
+	  '  make remote-index DOCS="/path/to/documents" REMOTE_EMBEDDING_MODEL=granite-embedding' \
 	  '  make remote-db-reset CONFIRM=erase  # erases only remote JAR index tables' \
-	  '  make status  # uses remote-db when set; local file details still describe DB_DATA_DIR' \
+	  '  make status  # uses REMOTE_DB when set; local file details still describe DB_DATA_DIR' \
 	  '  remote-index and remote-chat run connectivity checks first and stop on failure.' \
 	  '  index and chat keep local Kronk inference; remote targets use HTTP model APIs.' \
 	  '  EMBEDDING_MODEL and DIMENSIONS must match the actual remote embedding model.' '' \

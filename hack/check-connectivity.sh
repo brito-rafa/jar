@@ -14,11 +14,14 @@ import urllib.parse
 import urllib.request
 
 keys = {
-    'remote-embedding': 'JAR_REMOTE_EMBEDDING',
-    'remote-chat': 'JAR_REMOTE_CHAT',
-    'remote-db': 'JAR_REMOTE_DB',
-    'remote-db-token': 'JAR_REMOTE_DB_TOKEN',
+    'REMOTE_EMBEDDING': 'JAR_REMOTE_EMBEDDING',
+    'REMOTE_CHAT': 'JAR_REMOTE_CHAT',
+    'REMOTE_DB': 'JAR_REMOTE_DB',
+    'REMOTE_DB_TOKEN': 'JAR_REMOTE_DB_TOKEN',
 }
+for key, process_key in keys.items():
+    if key in os.environ:
+        os.environ.setdefault(process_key, os.environ[key])
 env_file = Path(sys.argv[1])
 if env_file.is_file():
     for line in env_file.read_text().splitlines():

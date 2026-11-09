@@ -129,7 +129,7 @@ kubectl apply -f data/k8s/duckdb.yaml
 kubectl rollout status deployment/duckdb
 ```
 
-The generated file is ignored local content containing a credential. Copy its token privately into `remote-db-token` in `.env`. Preserve the generated file and token on subsequent runs rather than generating a replacement for an existing deployment.
+The generated file is ignored local content containing a credential. Copy its token privately into `REMOTE_DB_TOKEN` in `.env`. Preserve the generated file and token on subsequent runs rather than generating a replacement for an existing deployment.
 
 The manifest stores `/data/lab.duckdb` on the `duckdb-data` 20 GiB PVC. Quack listens inside the pod on loopback; an nginx sidecar exposes it through `svc/duckdb:9494`. This storage is separate from local Compose's `DB_DATA_DIR/jar.db`. Keep the PVC to preserve the index, and stop the owning database process cleanly before file-level backups. The cluster needs a working storage provisioner and extension-download access.
 
@@ -148,13 +148,13 @@ These commands bind to loopback. `hack/k8s-setup/04-portforward.sh` instead bind
 Configure the client `.env` for the loopback forwards:
 
 ```dotenv
-remote-embedding=http://127.0.0.1:8081
-remote-chat=http://127.0.0.1:8080
-remote-db=127.0.0.1:9494
-remote-db-token=<token-from-your-private-duckdb-manifest>
-remote-db-disable-ssl=true
-remote-embedding-model=granite-embedding
-remote-chat-model=ministral-3-8b
+REMOTE_EMBEDDING=http://127.0.0.1:8081
+REMOTE_CHAT=http://127.0.0.1:8080
+REMOTE_DB=127.0.0.1:9494
+REMOTE_DB_TOKEN=<token-from-your-private-duckdb-manifest>
+REMOTE_DB_DISABLE_SSL=true
+REMOTE_EMBEDDING_MODEL=granite-embedding
+REMOTE_CHAT_MODEL=ministral-3-8b
 ```
 
 For a client on another machine, replace loopback with the deliberately exposed server address. See [Remote connectivity](#remote-connectivity) for TLS and endpoint settings.
@@ -172,36 +172,80 @@ The browser chat uses port 18080 by default, separate from the forwarded model p
 
 `hack/k8s-setup/05-aigateway.sh` installs Envoy Gateway and AI Gateway, applies a gateway manifest, and forwards the resulting service on port 8080. It still refers to `ai-gateway.yaml` in the working directory. Use the installation commands in that script, then apply `config/manifests/k8s/ai-gateway/example-ai-gateway.yaml` in place of the old path and use its service-discovery/port-forward commands. Stop the direct chat forward first, or choose a different local gateway port.
 
-The gateway routes requests by model ID to the predictors in the `default` namespace. Set both `remote-chat` and `remote-embedding` to the gateway URL, retaining the explicit model IDs above. The database keeps its own endpoint. This gateway is optional; direct predictor URLs are sufficient.
+The gateway routes requests by model ID to the predictors in the `default` namespace. Set both `REMOTE_CHAT` and `REMOTE_EMBEDDING` to the gateway URL, retaining the explicit model IDs above. The database keeps its own endpoint. This gateway is optional; direct predictor URLs are sufficient.
 
 ## Remote connectivity
+
+Configure the endpoints and models, check the connections, then index documents before starting chat.
+
+### Endpoints and database transport
 
 Set the following keys in the ignored `.env` file:
 
 ```dotenv
-remote-embedding=your-server.example:8081
-remote-chat=your-server.example:8080
-remote-db=your-server.example:9494
-remote-db-token=<remote-server-token>
+REMOTE_EMBEDDING=your-server.example:8081
+REMOTE_CHAT=your-server.example:8080
+REMOTE_DB=your-server.example:9494
+REMOTE_DB_TOKEN=<remote-server-token>
 ```
 
-Run `make check-connectivity` or `./hack/check-connectivity.sh` to check every configured service. The script reads the repository’s `.env` regardless of the current working directory; explicit `JAR_REMOTE_*` environment values take precedence (including empty values to skip a service). Empty endpoints are skipped; failures return a nonzero exit code. Python 3 is required. Granite is checked with a small multilingual embedding request, Ministral through its model-list endpoint and a short chat completion (up to 32 tokens, with a 60-second timeout), and DuckDB through a TCP connection. The generation check reports total request time and, when the server supplies completion-token usage, tokens per second. This includes network and prompt-processing time. The TCP check does not validate the DuckDB token; `make status` validates the authenticated database connection without changing data.
+`REMOTE_DB` selects the remote database for index, chat, metadata, and status. Its token stays separate from the local Docker token.
 
-For a remote DuckDB server intentionally serving plain HTTP, set `remote-db-disable-ssl=true` (default `false`). Direct CLI calls can use `--db-disable-ssl`. This sends the database token without application TLS; use it only over a trusted encrypted network. If using Tailscale, traffic between peers is encrypted by the Tailscale connection.
+For a remote DuckDB server intentionally serving plain HTTP, set `REMOTE_DB_DISABLE_SSL=true` (default `false`). Direct CLI calls can use `--db-disable-ssl`. This sends the database token without application TLS; use it only over a trusted encrypted network. If using Tailscale, traffic between peers is encrypted by the Tailscale connection.
 
-`remote-db` selects the remote database for index, chat, metadata, and status; its token stays separate from the local Docker token. Local file details in `make status` still describe `DB_DATA_DIR`. `make remote-index DOCS="/path/to/documents"` uses remote embeddings and the remote database. `make remote-chat` opens web chat using both remote models and the remote database. Both require all four remote settings and run `check-connectivity` first; any failed check prevents the application from starting. `make status` uses `remote-db` when configured. Ordinary `make index` and `make chat` retain local Kronk inference. Fully remote runs skip local model downloads and Metal initialization.
+Make reads `.env` and bridges the endpoint and database settings to `JAR_REMOTE_*` variables for child processes. Do not source `.env` as a shell script.
 
-Optional `remote-chat-model` and `remote-embedding-model` select API model IDs. If omitted, each endpoint must advertise exactly one model via `/v1/models`. For direct CLI use, pass `--remote-chat`, `--remote-embedding`, and optionally `--remote-chat-model` / `--remote-embedding-model`; the indexer accepts only the embedding flags. An empty endpoint retains local inference. Remote failures are reported without automatic local fallback.
+### Model selection and index compatibility
 
-Indexing installs and loads the VSS extension on the connected DuckDB server before creating the index. The server needs extension-download access on first use; installing VSS on the client alone does not provision the server.
+Optional `REMOTE_CHAT_MODEL` and `REMOTE_EMBEDDING_MODEL` select API model IDs. If omitted, each endpoint must advertise exactly one model via `/v1/models`.
 
 `EMBEDDING_MODEL` remains the canonical identity stored with the index; the remote API alias is separate. The remote embedding server must serve that exact model with the same preprocessing and dimensions. JAR checks vector sizes; it cannot prove that an API alias serves identical weights. Changing the embedding model requires rebuilding the index. Existing batching, deduplication, citations and reference translations apply to both providers.
 
-Make bridges these hyphenated keys to `JAR_REMOTE_EMBEDDING`, `JAR_REMOTE_CHAT`, `JAR_REMOTE_DB`, and `JAR_REMOTE_DB_TOKEN` for child processes. Do not source `.env` as a shell script.
+### Check connectivity and authentication
 
-Loading reports embedding batch-request latency (average/maximum and failures), insert-call latency, elapsed time, written chunks per second, and result-queue wait summed across workers. Embedding latency includes network, server queueing and any token-limit recovery; insert latency includes serialization and source-metadata writes. These are client timings, not GPU kernel timings. Progress is provisional until the transaction commits; a failed load rolls back its writes. Metrics are also printed on failure.
+Run either command to check every configured service (Python 3 is required):
+
+```bash
+make check-connectivity
+# Or run the script directly:
+./hack/check-connectivity.sh
+```
+
+The checks cover:
+
+- Granite: a small multilingual embedding request.
+- Ministral: its model-list endpoint and a short chat completion, up to 32 tokens with a 60-second timeout.
+- DuckDB: a TCP connection. This does not validate the database token; run `make status` to check authentication without changing data. Local file details in that output still describe `DB_DATA_DIR`.
+
+The generation check reports total request time and, when the server supplies completion-token usage, tokens per second. These values include network and prompt-processing time.
+
+The script reads the repository’s `.env` regardless of the current working directory. For direct script calls, explicit `REMOTE_*` environment values override the file, and application-level `JAR_REMOTE_*` values take highest precedence. Empty endpoints skip a service, including explicit empty environment overrides. Failures return a nonzero exit code.
+
+### Run remote indexing and chat
+
+Both remote targets require all four endpoint/token settings above and run connectivity checks before starting. Any failed check prevents the application from starting.
+
+```bash
+make remote-index DOCS="/path/to/documents"
+# Wait for indexing to finish, then start browser chat:
+make remote-chat
+```
+
+`remote-index` uses remote embeddings and the remote database. `remote-chat` uses both remote models and the remote database. Fully remote runs skip local model downloads and Metal initialization. Ordinary `make index` and `make chat` retain local Kronk inference.
+
+Indexing installs and loads the VSS extension on the connected DuckDB server before creating the index. The server needs extension-download access on first use; installing VSS on the client alone does not provision the server.
+
+### Direct CLI options
+
+For direct CLI use, pass `--remote-chat`, `--remote-embedding`, and optionally `--remote-chat-model` / `--remote-embedding-model`; the indexer accepts only the embedding flags. An empty endpoint retains local inference. Remote failures are reported without automatic local fallback.
+
+### Remote embedding input limits
 
 For llama.cpp servers reporting a structured context-limit error, JAR retries embedding requests using the server tokenizer and token arrays truncated to the reported limit, retaining boundary special tokens. Original indexed text is unchanged. Other HTTP errors fail with their status and structured error type; server response text and document content are not logged. Servers without a compatible tokenizer must accept the input length or require smaller document passages.
+
+## Indexing performance and batching
+
+### Batch size and queue capacity
 
 The completed-embedding queue defaults to 16 batches, independently of worker concurrency. With batches of 8, it buffers up to 128 completed chunks while inserts run. Additional chunks may be in flight or awaiting an insert. This bounds memory without forcing a single embedding worker to pause after one queued batch. A larger buffer can reduce temporary backpressure; it cannot overcome a sustained database bottleneck.
 
@@ -218,9 +262,20 @@ make index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BUFFER_BATCHE
 
 The direct indexer flag is `--embedding-buffer-batches=16`. Set `EMBEDDING_BUFFER_BATCHES=16` in `.env` to persist it. An already unchanged index is reused; add `FORCE_INDEX=true` only when intentionally rebuilding it for a comparison.
 
+### Indexing metrics
+
+Loading reports embedding batch-request latency (average/maximum and failures), insert-call latency, elapsed time, written chunks per second, and result-queue wait summed across workers. Embedding latency includes network, server queueing and any token-limit recovery; insert latency includes serialization and source-metadata writes. These are client timings, not GPU kernel timings. Progress is provisional until the transaction commits; a failed load rolls back its writes. Metrics are also printed on failure.
+
+## Chat timing and model metrics
+
+### Client timings
+
 Chat answers include client timing for query embedding, database vector search, total retrieval (including embedding and result preparation), generation across all attempts, citation/grounding validation, and total handling time. The terminal and web interface also report timing for failed queries. Values include network and server waits; total handling excludes HTTP session-lock wait, browser rendering, and response delivery. Retrieval includes its embedding/search substeps and should not be added to them. Remote answers are buffered, so time to first token is not measured.
 
+### Remote server metrics
+
 Each remote chat completion logs a JSON `model_response_metrics` event with `usage.prompt_tokens`, `usage.completion_tokens`, `timings.prompt_ms`, and `timings.predicted_ms`, as supplied by llama.cpp. This includes each answer retry and reference-translation part. Missing values are `null`; actual zeroes are retained. Timings are server-reported milliseconds, distinct from JAR's client request durations. Logs contain response ID, model ID and numeric metrics, without prompts or generated text.
+
 ## Connection and model settings
 
 | Make variable | Default / purpose |
@@ -334,7 +389,7 @@ To erase only the JAR index on the configured remote server:
 make remote-db-reset CONFIRM=erase
 ```
 
-This requires `remote-db` and `remote-db-token`, connects directly to that endpoint, and transactionally drops JAR's `items`, `item_sources`, and `jar_index_metadata` tables. Unrelated tables, the server process, and local files are preserved. It does not require model endpoints or load models. Stop indexing and chat before resetting, then rebuild with `make remote-index DOCS="/path/to/documents"`.
+This requires `REMOTE_DB` and `REMOTE_DB_TOKEN`, connects directly to that endpoint, and transactionally drops JAR's `items`, `item_sources`, and `jar_index_metadata` tables. Unrelated tables, the server process, and local files are preserved. It does not require model endpoints or load models. Stop indexing and chat before resetting, then rebuild with `make remote-index DOCS="/path/to/documents"`.
 
 ## Index status
 

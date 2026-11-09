@@ -26,10 +26,10 @@ Replace `DOCS` with an existing document directory, or several directories separ
 With the [Kubernetes services deployed](setup.md#kubernetes-setup), point JAR at your KServe chat and embedding APIs and DuckDB service. Add these settings to the ignored `.env`, replacing the example addresses and token:
 
 ```dotenv
-remote-chat=https://chat.example.com
-remote-embedding=https://embedding.example.com
-remote-db=duckdb.example.com:9494
-remote-db-token=<your-remote-server-token>
+REMOTE_CHAT=https://chat.example.com
+REMOTE_EMBEDDING=https://embedding.example.com
+REMOTE_DB=duckdb.example.com:9494
+REMOTE_DB_TOKEN=<your-remote-server-token>
 ```
 
 Then run from the repository root:
@@ -39,7 +39,7 @@ make remote-index DOCS="/absolute/path/to/your/documents"
 make remote-chat
 ```
 
-Both commands check connectivity first. Wait for indexing to finish before starting chat; later starts only need `make remote-chat`. JAR runs locally while the configured services handle inference and storage. For plain HTTP DuckDB over a trusted encrypted network, add `remote-db-disable-ssl=true` to `.env`. See [remote connectivity](setup.md#remote-connectivity) for endpoint and model configuration.
+Both commands check connectivity first. Wait for indexing to finish before starting chat; later starts only need `make remote-chat`. JAR runs locally while the configured services handle inference and storage. For plain HTTP DuckDB over a trusted encrypted network, add `REMOTE_DB_DISABLE_SSL=true` to `.env`. See [remote connectivity](setup.md#remote-connectivity) for endpoint and model configuration.
 
 ## Overview
 
