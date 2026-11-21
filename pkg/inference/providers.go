@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 )
 
-// Small interfaces let the existing Kronk implementation and HTTP providers share callers.
+// These interfaces keep the chat and indexing packages independent of the HTTP client.
 type Embedder interface {
 	Embeddings(context.Context, model.D) (model.EmbedReponse, error)
 	Unload(context.Context) error
@@ -52,6 +52,10 @@ type Remote struct {
 }
 
 func NewRemote(endpoint, name string) (*Remote, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil, fmt.Errorf("remote model endpoint is required")
+	}
 	if !strings.Contains(endpoint, "://") {
 		endpoint = "http://" + endpoint
 	}
@@ -231,37 +235,33 @@ func (r *Remote) ChatStreaming(ctx context.Context, d model.D) (<-chan model.Cha
 	close(ch)
 	return ch, nil
 }
-func OpenEmbedding(ctx context.Context, source, endpoint, name string, workers int) (Embedder, error) {
-	if endpoint != "" {
-		r, e := NewRemote(endpoint, name)
-		if e != nil {
-			return nil, e
-		}
-		if e = r.Discover(ctx); e != nil {
-			return nil, e
-		}
-		return r, nil
+
+// OpenEmbedding connects to an explicit OpenAI-compatible embedding service.
+func OpenEmbedding(ctx context.Context, endpoint, name string) (Embedder, error) {
+	r, err := openRemote(ctx, endpoint, name)
+	if err != nil {
+		return nil, err
 	}
-	p, _, e := Install(source, "")
-	if e != nil {
-		return nil, e
-	}
-	return New(p, model.WithNSeqMax(workers))
+	return r, nil
 }
-func OpenChat(ctx context.Context, source, endpoint, name string) (ChatModel, error) {
-	if endpoint != "" {
-		r, e := NewRemote(endpoint, name)
-		if e != nil {
-			return nil, e
-		}
-		if e = r.Discover(ctx); e != nil {
-			return nil, e
-		}
-		return r, nil
+
+// OpenChat connects to an explicit OpenAI-compatible chat service.
+func OpenChat(ctx context.Context, endpoint, name string) (ChatModel, error) {
+	r, err := openRemote(ctx, endpoint, name)
+	if err != nil {
+		return nil, err
 	}
-	p, _, e := Install(source, "")
-	if e != nil {
-		return nil, e
+	return r, nil
+}
+
+func openRemote(ctx context.Context, endpoint, name string) (*Remote, error) {
+	r, err := NewRemote(endpoint, name)
+	if err != nil {
+		return nil, err
 	}
-	return New(p)
+	if err := r.Discover(ctx); err != nil {
+		_ = r.Unload(ctx)
+		return nil, err
+	}
+	return r, nil
 }

@@ -3,7 +3,7 @@ package chat
 import (
 	"bytes"
 	"errors"
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 	"github.com/brito-rafa/jar/pkg/duck"
 	"strings"
 	"testing"

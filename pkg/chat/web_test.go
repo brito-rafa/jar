@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 	"io"
 	"net/http"
 	"net/http/httptest"

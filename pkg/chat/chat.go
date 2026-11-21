@@ -8,11 +8,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
 	"github.com/brito-rafa/jar/pkg/connection"
 	"github.com/brito-rafa/jar/pkg/duck"
 	"github.com/brito-rafa/jar/pkg/inference"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 	"io"
+	"os"
 	"strings"
 	"time"
 )
@@ -21,18 +22,19 @@ import (
 func Run(args []string) error {
 	f := flag.NewFlagSet("jar-chat", flag.ContinueOnError)
 	var c connection.Flags
-	c.Register(f)
+	if err := c.Register(f); err != nil {
+		return err
+	}
 	web := f.Bool("web", false, "Serve browser chat")
 	host := f.String("host", "127.0.0.1", "Web listen address; 0.0.0.0 listens on all IPv4 interfaces")
 	allowAnyHost := f.Bool("allow-any-host", false, "Accept any request hostname; unauthenticated network access")
 	port := f.Int("port", 8080, "Browser chat TCP port (1-65535)")
 	publicURL := f.String("public-url", "", "Allowed external HTTP(S) origin for a reverse proxy")
 	openBrowser := f.Bool("open-browser", false, "Open the browser after the web server starts")
-	remoteChat := f.String("remote-chat", "", "Remote OpenAI-compatible chat endpoint; empty uses Kronk")
-	remoteEmbedding := f.String("remote-embedding", "", "Remote embedding endpoint; empty uses Kronk")
-	remoteChatModel := f.String("remote-chat-model", "", "Remote chat API model ID; otherwise discover the sole advertised model")
-	remoteEmbeddingModel := f.String("remote-embedding-model", "", "Remote embedding API model ID; must match the indexed embedding model")
-	chat := f.String("chat-model", inference.DefaultChat, "Chat model for answering retrieved questions")
+	chatURL := f.String("chat-url", os.Getenv("CHAT_URL"), "OpenAI-compatible chat endpoint (required)")
+	embeddingURL := f.String("embedding-url", os.Getenv("EMBEDDING_URL"), "OpenAI-compatible embedding endpoint (required)")
+	chat := f.String("chat-model", os.Getenv("CHAT_MODEL"), "Chat API model ID; empty discovers the sole advertised model")
+	embeddingAPIModel := f.String("embedding-api-model", os.Getenv("EMBEDDING_API_MODEL"), "Embedding API model ID; must serve the indexed embedding model")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -45,8 +47,8 @@ func Run(args []string) error {
 	if _, err := parsePublicURL(*publicURL); err != nil {
 		return err
 	}
-	if *chat == "" {
-		return fmt.Errorf("chat-model is required")
+	if strings.TrimSpace(*chatURL) == "" || strings.TrimSpace(*embeddingURL) == "" {
+		return fmt.Errorf("chat-url and embedding-url are required (or set CHAT_URL and EMBEDDING_URL)")
 	}
 	db, err := c.Open()
 	if err != nil {
@@ -60,12 +62,12 @@ func Run(args []string) error {
 	if !state.Ready || state.Chunks == 0 {
 		return fmt.Errorf("database has no ready JAR index; run jar-index first")
 	}
-	krnEmbed, err := inference.OpenEmbedding(context.Background(), state.EmbeddingModel, *remoteEmbedding, *remoteEmbeddingModel, 1)
+	krnEmbed, err := inference.OpenEmbedding(context.Background(), *embeddingURL, *embeddingAPIModel)
 	if err != nil {
 		return err
 	}
 	defer krnEmbed.Unload(context.Background())
-	krnChat, err := inference.OpenChat(context.Background(), *chat, *remoteChat, *remoteChatModel)
+	krnChat, err := inference.OpenChat(context.Background(), *chatURL, *chat)
 	if err != nil {
 		return err
 	}

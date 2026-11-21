@@ -1,0 +1,50 @@
+# Two models on two separate GPUs in the same cluster/default namespace.
+# Ministral -> NVIDIA RTX 5060 Ti; Granite embeddings -> AMD RX 6600.
+# Resource memory values are host RAM limits, not VRAM limits.
+# One replica per service avoids requesting a second exclusive GPU allocation.
+---
+# Chat. Mistral recommends temperature below 0.1 for everyday use; requests can override it.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ministral-3-8b
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-cuda
+      storageUri: hf-gguf://mistralai/Ministral-3-8B-Instruct-2512-GGUF/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf
+      args: ["-m", "/mnt/models/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+             "--alias", "ministral-3-8b", "-c", "4096", "--jinja", "--temp", "0.05"]
+      resources:
+        requests: {cpu: "2", memory: 4Gi}
+        limits: {memory: 8Gi, nvidia.com/gpu: 1}
+---
+# Embeddings: 768-dim vectors, 512-token max input; 4 slots x 512 tokens, and the
+# micro-batch covers a whole input because the model isn't causal.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: granite-embedding
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-rocm
+      storageUri: hf-gguf://bartowski/granite-embedding-278m-multilingual-GGUF/granite-embedding-278m-multilingual-Q8_0.gguf
+      args: ["-m", "/mnt/models/granite-embedding-278m-multilingual-Q8_0.gguf",
+             "--alias", "granite-embedding", "--embeddings",
+             "-c", "2048", "-np", "4", "-b", "2048", "-ub", "2048"]
+      resources:
+        requests: {cpu: "1", memory: 512Mi}
+        limits: {memory: 1Gi, amd.com/gpu: 1}

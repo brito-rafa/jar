@@ -1,13 +1,15 @@
+// Package connection configures the DuckDB service connection.
 package connection
 
 import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"github.com/brito-rafa/jar/pkg/duck"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/brito-rafa/jar/pkg/duck"
 )
 
 type Flags struct {
@@ -15,26 +17,23 @@ type Flags struct {
 	DisableSSL bool
 }
 
-func (c *Flags) Register(f *flag.FlagSet) {
-	endpoint := "quack:127.0.0.1:9494"
-	if remote := os.Getenv("JAR_REMOTE_DB"); remote != "" {
-		endpoint = "quack:" + strings.TrimPrefix(remote, "quack:")
-	}
-	f.StringVar(&c.Endpoint, "db-url", endpoint, "DuckDB Quack Endpoint over TCP; token from JAR_DB_TOKEN")
-	f.BoolVar(&c.DisableSSL, "db-disable-ssl", false, "Use plain HTTP for DuckDB instead of its default transport")
-}
-func (c Flags) Open() (*sql.DB, error) {
-	token := os.Getenv("JAR_DB_TOKEN")
-	remote := os.Getenv("JAR_REMOTE_DB")
-	if remote != "" && c.Endpoint == "quack:"+strings.TrimPrefix(remote, "quack:") {
-		token = os.Getenv("JAR_REMOTE_DB_TOKEN")
-		if value := os.Getenv("JAR_REMOTE_DB_DISABLE_SSL"); value != "" {
-			disable, err := strconv.ParseBool(value)
-			if err != nil {
-				return nil, fmt.Errorf("REMOTE_DB_DISABLE_SSL must be true or false")
-			}
-			c.DisableSSL = c.DisableSSL || disable
+func (c *Flags) Register(f *flag.FlagSet) error {
+	disableSSL := false
+	if value := os.Getenv("DB_DISABLE_SSL"); value != "" {
+		var err error
+		disableSSL, err = strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("DB_DISABLE_SSL must be true or false")
 		}
 	}
-	return duck.OpenRemote(c.Endpoint, token, c.DisableSSL)
+	f.StringVar(&c.Endpoint, "db-url", os.Getenv("DB_URL"), "DuckDB Quack endpoint (required); token from DB_TOKEN")
+	f.BoolVar(&c.DisableSSL, "db-disable-ssl", disableSSL, "Use plain HTTP for DuckDB instead of its default transport")
+	return nil
+}
+
+func (c Flags) Open() (*sql.DB, error) {
+	if strings.TrimSpace(c.Endpoint) == "" {
+		return nil, fmt.Errorf("db-url is required (or set DB_URL)")
+	}
+	return duck.OpenRemote(c.Endpoint, os.Getenv("DB_TOKEN"), c.DisableSSL)
 }

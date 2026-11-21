@@ -15,7 +15,7 @@ func OpenRemote(endpoint, token string, disableSSL ...bool) (*sql.DB, error) {
 		return nil, fmt.Errorf("db-url must use the quack: scheme")
 	}
 	if len(token) < 4 {
-		return nil, fmt.Errorf("set JAR_DB_TOKEN to the token configured for the DuckDB container")
+		return nil, fmt.Errorf("set DB_TOKEN to the token configured for the DuckDB container")
 	}
 	db, err := sql.Open("duckdb", "")
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 	"github.com/brito-rafa/jar/pkg/catalog"
 	"github.com/brito-rafa/jar/pkg/duck"
 	"github.com/brito-rafa/jar/pkg/inference"

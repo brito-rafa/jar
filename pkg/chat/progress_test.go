@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 )
 
 func TestWebStreamsRetrievalBeforeAnswer(t *testing.T) {

@@ -11,7 +11,7 @@ func TestRemoteSourceMetadata(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("requires isolated metadata test server")
 	}
-	db, err := OpenRemote(endpoint, os.Getenv("JAR_DB_TOKEN"))
+	db, err := OpenRemote(endpoint, os.Getenv("DB_TOKEN"))
 	if err != nil {
 		t.Fatal(err)
 	}

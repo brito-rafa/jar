@@ -10,7 +10,7 @@ func TestRemoteTransactionRollback(t *testing.T) {
 	if os.Getenv("JAR_TEST_REMOTE") == "" {
 		t.Skip("remote test disabled")
 	}
-	db, err := OpenRemote("quack:127.0.0.1:9494", os.Getenv("JAR_DB_TOKEN"))
+	db, err := OpenRemote("quack:127.0.0.1:9494", os.Getenv("DB_TOKEN"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestRemoteValuesAndAuthentication(t *testing.T) {
 	if os.Getenv("JAR_TEST_REMOTE") == "" {
 		t.Skip("remote test disabled")
 	}
-	db, err := OpenRemote("quack:127.0.0.1:9494", os.Getenv("JAR_DB_TOKEN"))
+	db, err := OpenRemote("quack:127.0.0.1:9494", os.Getenv("DB_TOKEN"))
 	if err != nil {
 		t.Fatal(err)
 	}

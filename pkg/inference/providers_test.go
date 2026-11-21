@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 )
 
 func TestRemoteProviders(t *testing.T) {
@@ -139,5 +139,74 @@ func TestRemoteHTTPErrorDoesNotEchoServerMessage(t *testing.T) {
 	_, err := remote.Embeddings(context.Background(), model.D{"input": "fixture", "truncate": true})
 	if err == nil || !strings.Contains(err.Error(), "invalid_request_error") || strings.Contains(err.Error(), "private") {
 		t.Fatalf("unexpected diagnostic: %v", err)
+	}
+}
+
+func TestOpenProvidersRequireEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"", " \t "} {
+		if _, err := OpenEmbedding(context.Background(), endpoint, "fixture"); err == nil || !strings.Contains(err.Error(), "endpoint is required") {
+			t.Fatalf("embedding endpoint %q: %v", endpoint, err)
+		}
+		if _, err := OpenChat(context.Background(), endpoint, "fixture"); err == nil || !strings.Contains(err.Error(), "endpoint is required") {
+			t.Fatalf("chat endpoint %q: %v", endpoint, err)
+		}
+	}
+}
+
+func TestOpenProvidersDiscoverOrUseExplicitModel(t *testing.T) {
+	for _, configured := range []string{"", "explicit-model"} {
+		t.Run(configured, func(t *testing.T) {
+			discoveryCalls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				discoveryCalls++
+				ioJSON(w, `{"data":[{"id":"discovered-model"}]}`)
+			}))
+			defer server.Close()
+			embed, err := OpenEmbedding(context.Background(), server.URL, configured)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer embed.Unload(context.Background())
+			chat, err := OpenChat(context.Background(), server.URL, configured)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer chat.Unload(context.Background())
+			wantName, wantCalls := configured, 0
+			if configured == "" {
+				wantName, wantCalls = "discovered-model", 2
+			}
+			if embed.(*Remote).name != wantName || chat.(*Remote).name != wantName || discoveryCalls != wantCalls {
+				t.Fatalf("models=%q/%q discovery calls=%d", embed.(*Remote).name, chat.(*Remote).name, discoveryCalls)
+			}
+		})
+	}
+}
+
+func TestRemoteProtocolPreservesCompletionDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ioJSON(w, `{"id":"fixture","model":"fixture-model","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer","reasoning_content":"fixture reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":3},"tokens_per_second":2.5,"time_to_first_token_ms":40}}`)
+	}))
+	defer server.Close()
+	remote, err := NewRemote(server.URL, "fixture-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remote.Unload(context.Background())
+	ch, err := remote.ChatStreaming(context.Background(), model.D{"messages": []model.D{model.TextMessage("user", "fixture")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := <-ch
+	choice := response.Choices[0]
+	if choice.FinishReason() != model.FinishReasonLength || choice.Message.Content != "fixture answer" || choice.Delta.Reasoning != "fixture reasoning" {
+		t.Fatalf("completion details lost: %+v", choice)
+	}
+	usage := response.Usage
+	if usage == nil || usage.TotalTokens != 13 || usage.PromptTokensDetails.CachedTokens != 2 || usage.CompletionTokensDetails.ReasoningTokens != 3 || usage.TokensPerSecond != 2.5 || usage.TimeToFirstTokenMS != 40 {
+		t.Fatalf("usage details lost: %+v", usage)
 	}
 }

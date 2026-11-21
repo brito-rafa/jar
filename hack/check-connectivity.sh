@@ -1,27 +1,19 @@
 #!/bin/sh
-# Read project .env safely; explicit process environment overrides file settings.
+# Read project .env without evaluating shell code. Process environment takes precedence.
 set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec python3 - "$script_dir/../.env" <<'PY'
+exec python3 - "$script_dir/../.env" "$@" <<'PY'
 import json
 import math
 import os
 import socket
-import time
 import sys
+import time
 from pathlib import Path
 import urllib.parse
 import urllib.request
 
-keys = {
-    'REMOTE_EMBEDDING': 'JAR_REMOTE_EMBEDDING',
-    'REMOTE_CHAT': 'JAR_REMOTE_CHAT',
-    'REMOTE_DB': 'JAR_REMOTE_DB',
-    'REMOTE_DB_TOKEN': 'JAR_REMOTE_DB_TOKEN',
-}
-for key, process_key in keys.items():
-    if key in os.environ:
-        os.environ.setdefault(process_key, os.environ[key])
+keys = {'EMBEDDING_URL', 'CHAT_URL', 'DB_URL', 'CHAT_MODEL', 'EMBEDDING_API_MODEL'}
 env_file = Path(sys.argv[1])
 if env_file.is_file():
     for line in env_file.read_text().splitlines():
@@ -38,16 +30,18 @@ if env_file.is_file():
                 value = value[1:-1]
             else:
                 value = value.split(' #', 1)[0].rstrip()
-            os.environ.setdefault(keys[key], value)
+            os.environ.setdefault(key, value)
 
-failed = False
-configured = 0
+services = sys.argv[2:] or ['embedding', 'chat', 'db']
+if any(service not in ('embedding', 'chat', 'db') for service in services):
+    print('Usage: check-connectivity.sh [embedding|chat|db ...]', file=sys.stderr)
+    raise SystemExit(2)
 
 def request(base, path, payload=None, timeout=20):
     base = base if '://' in base else 'http://' + base
     parsed = urllib.parse.urlsplit(base)
-    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError('expected HTTP(S) host:port without credentials')
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError('expected HTTP(S) endpoint without credentials, query, or fragment')
     url = base.rstrip('/')
     if url.endswith('/v1'):
         url = url[:-3]
@@ -56,33 +50,38 @@ def request(base, path, payload=None, timeout=20):
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.load(response)
 
-def cosine(a, b):
-    denominator = math.sqrt(sum(x*x for x in a) * sum(x*x for x in b))
-    if not denominator:
-        raise ValueError('zero embedding vector')
-    return sum(x*y for x,y in zip(a,b)) / denominator
+def model_name(endpoint, setting):
+    name = os.environ.get(setting, '').strip()
+    if name:
+        return name
+    models = request(endpoint, '/v1/models').get('data')
+    if not isinstance(models, list) or len(models) != 1 or not models[0].get('id'):
+        raise ValueError('set an API model ID when the endpoint does not advertise exactly one model')
+    return models[0]['id']
 
-for service, key in [('Granite', 'JAR_REMOTE_EMBEDDING'), ('Ministral', 'JAR_REMOTE_CHAT'), ('DuckDB', 'JAR_REMOTE_DB')]:
+failed = False
+configured = 0
+for service in services:
+    key = {'embedding': 'EMBEDDING_URL', 'chat': 'CHAT_URL', 'db': 'DB_URL'}[service]
     endpoint = os.environ.get(key, '').strip()
+    label = {'embedding': 'Embeddings', 'chat': 'Chat', 'db': 'DuckDB'}[service]
     if not endpoint:
-        print(f'{service}: skipped (not configured)')
+        print(f'{label}: skipped ({key} not configured)')
         continue
     configured += 1
     try:
-        if service == 'Granite':
-            result = request(endpoint, '/v1/embeddings', {'model': 'granite-embedding', 'input': ['olá mundo', 'hello world', 'the stock market fell today']})
-            entries = sorted(result['data'], key=lambda item: item['index'])
-            vectors = [entry['embedding'] for entry in entries]
-            if len(vectors) != 3 or not vectors[0] or len({len(v) for v in vectors}) != 1 or not all(math.isfinite(x) for v in vectors for x in v):
+        if service == 'embedding':
+            model = model_name(endpoint, 'EMBEDDING_API_MODEL')
+            result = request(endpoint, '/v1/embeddings', {'model': model, 'input': ['hello world']})
+            entries = result['data']
+            if len(entries) != 1 or entries[0]['index'] != 0:
                 raise ValueError('invalid embedding response')
-            print(f'Granite: OK ({len(vectors[0])} dimensions)')
-            print(f'  olá mundo ~ hello world: {cosine(vectors[0], vectors[1]):.3f}')
-            print(f'  olá mundo ~ stock market: {cosine(vectors[0], vectors[2]):.3f}')
-        elif service == 'Ministral':
-            result = request(endpoint, '/v1/models')
-            if not isinstance(result.get('data'), list) or not result['data']:
-                raise ValueError('no models advertised')
-            model = result['data'][0]['id']
+            vector = entries[0]['embedding']
+            if not vector or not all(math.isfinite(x) for x in vector):
+                raise ValueError('invalid embedding vector')
+            print(f'Embeddings: OK ({len(vector)} dimensions)')
+        elif service == 'chat':
+            model = model_name(endpoint, 'CHAT_MODEL')
             started = time.perf_counter()
             result = request(endpoint, '/v1/chat/completions', {
                 'model': model,
@@ -95,25 +94,24 @@ for service, key in [('Granite', 'JAR_REMOTE_EMBEDDING'), ('Ministral', 'JAR_REM
             content = result['choices'][0]['message']['content']
             if not isinstance(content, str) or not content.strip():
                 raise ValueError('generation returned no text')
-            print('Ministral: OK (model API and text generation)')
-            print('  Generated: ' + json.dumps(content.strip(), ensure_ascii=False))
-            print(f'  Generation request time: {elapsed:.3f} s')
+            print(f'Chat: OK (model API and text generation; {elapsed:.3f} s)')
             tokens = result.get('usage', {}).get('completion_tokens')
             if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0 and elapsed > 0:
                 print(f'  Completion tokens: {tokens}; request throughput: {tokens / elapsed:.2f} tokens/s')
         else:
-            address = endpoint.removeprefix('quack:')
-            parsed = urllib.parse.urlsplit('//'+address)
-            if not parsed.hostname or not parsed.port or parsed.path:
-                raise ValueError('expected host:port or quack:host:port')
+            if not endpoint.startswith('quack:'):
+                raise ValueError('DB_URL must use quack:host:port')
+            parsed = urllib.parse.urlsplit('//' + endpoint[len('quack:'):])
+            if not parsed.hostname or not parsed.port or parsed.path or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError('expected quack:host:port without credentials')
             with socket.create_connection((parsed.hostname, parsed.port), timeout=5):
                 pass
             print('DuckDB: OK (TCP reachable; run make status to validate authentication)')
     except Exception as error:
-        # Avoid response bodies, URLs, and credentials in diagnostic output.
-        print(f'{service}: FAILED ({type(error).__name__})')
+        # Avoid response bodies, URLs, model text, and credentials in diagnostics.
+        print(f'{label}: FAILED ({type(error).__name__})')
         failed = True
 if not configured:
-    print('No remote services configured.')
+    print('No services configured.')
 raise SystemExit(1 if failed else 0)
 PY

@@ -27,3 +27,20 @@ func TestResetRejectsUnsafeArgumentsBeforeConnecting(t *testing.T) {
 		}
 	}
 }
+
+func TestIndexRequiresEmbeddingEndpointBeforeConnecting(t *testing.T) {
+	t.Setenv("EMBEDDING_URL", "")
+	t.Setenv("DB_DISABLE_SSL", "")
+	if err := Run([]string{"-docs=" + t.TempDir()}); err == nil || !strings.Contains(err.Error(), "embedding-url is required") {
+		t.Fatalf("expected missing embedding endpoint error, got %v", err)
+	}
+}
+
+func TestIndexRejectsOldProviderSelectionFlags(t *testing.T) {
+	t.Setenv("DB_DISABLE_SSL", "")
+	for _, name := range []string{"remote-embedding", "remote-embedding-model"} {
+		if err := Run([]string{"-" + name + "=example.test"}); err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Fatalf("%s: expected unsupported flag, got %v", name, err)
+		}
+	}
+}

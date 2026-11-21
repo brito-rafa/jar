@@ -1,0 +1,96 @@
+# Namespace-scoped replacement for the Granite embedding service.
+# Requires the hf-gguf ClusterStorageContainer from example-cluster-serving-runtimes-*
+# Both resources must live in the same namespace; change both if not using default.
+# Stop/delete granite-embedding before applying: the RX 6600 is an exclusive GPU.
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: qwen3-embedding-8b-rocm
+  namespace: default
+spec:
+  supportedModelFormats:
+  - name: gguf
+    autoSelect: false
+  containers:
+  - name: kserve-container
+    # Moving tag matches the existing lab runtime; pin a tested digest after validation.
+    # If ROCm fails on this unsupported GPU, try server-vulkan instead.
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm
+    env:
+    # Preserve the lab's RX 6600 (gfx1032) compatibility workaround.
+    - name: HSA_OVERRIDE_GFX_VERSION
+      value: "10.3.0"
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: kfd
+      mountPath: /dev/kfd
+    - name: dri
+      mountPath: /dev/dri
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8080
+      periodSeconds: 10
+      failureThreshold: 60
+  volumes:
+  - name: kfd
+    hostPath:
+      path: /dev/kfd
+  - name: dri
+    hostPath:
+      path: /dev/dri
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen3-embedding-8b
+  namespace: default
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: gguf
+      runtime: qwen3-embedding-8b-rocm
+      storageUri: hf-gguf://Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q4_K_M.gguf
+      # Model supports 32K; intentionally serve 2K per input to bound memory use.
+      # One slot avoids dividing the configured context among parallel slots.
+      # Last-token pooling is required for this model; default output is 4096 dimensions.
+      args:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /mnt/models/Qwen3-Embedding-8B-Q4_K_M.gguf
+      - --alias
+      - qwen3-embedding-8b
+      - -ngl
+      - "99"
+      - --embeddings
+      - --pooling
+      - last
+      - -c
+      - "2048"
+      - -np
+      - "1"
+      - -b
+      - "2048"
+      - -ub
+      - "2048"
+      resources:
+        requests:
+          cpu: "2"
+          memory: 6Gi
+        # Host RAM, not VRAM. Actual GPU memory use must be checked on the card.
+        limits:
+          memory: 12Gi
+          amd.com/gpu: 1

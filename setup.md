@@ -1,14 +1,16 @@
 # JAR setup
 
-JAR supports local inference through Kronk and remote inference through KServe URLs. Both use a separate DuckDB service. Start with [requirements](#requirements), then choose [local setup](#local-setup) or [Kubernetes setup](#kubernetes-setup). Application settings and operational commands follow both paths.
+JAR is a Go client for **OpenAI-compatible chat and embedding services** and a separate DuckDB service. Document extraction, retrieval orchestration, and the browser/terminal interface run on the client. This repository never loads inference models locally.
 
-Run repository commands from the repository root unless noted otherwise. Keep credentials in the ignored `.env`; do not source it as a shell script.
+For Kronk/llama.cpp inference on your own machine and DuckDB Docker Compose setup, use [local-jar](https://github.com/brito-rafa/local-jar). The two repositories are independent and retain matching Go command/package layouts and compatible database indexes. Kubernetes examples remain in this repository.
+
+Run repository commands from the repository root unless noted otherwise. Keep credentials in the ignored `.env`; do not source it as a shell script. Existing installations should read [Parameter migration](#parameter-migration).
 
 ## Requirements
 
 - Go 1.27.3 or newer and a C compiler for the DuckDB Go client. On macOS, use native ARM64 Go and install Apple command-line tools with `xcode-select --install` if needed.
-- Docker running with Compose support (Docker Engine on Linux or Docker Desktop on macOS).
-- Disk space and an initial internet connection for dependencies, models, native libraries, the container image, and DuckDB extensions.
+- Python 3 for the connectivity-check script. Docker, kubectl, and Helm are needed only when deploying the supplied Kubernetes examples.
+- Disk space and an initial internet connection for Go dependencies. The database server needs access to DuckDB extensions; model servers need their own model files and runtime resources. The JAR client needs no GPU, Kronk, or llama.cpp installation.
 
 ### Document converters on Linux
 
@@ -22,7 +24,7 @@ PDF extraction uses `pdftotext`. Word extraction uses `wvWare` for DOC when avai
 
 ### Document converters on macOS
 
-LibreOffice is not required for JAR itself. Some very old Word files, including Word 2.0 documents such as `HSM.DOC`, need it because other converters can return binary data or incorrect text.
+LibreOffice is not required for JAR itself. Some very old Word files, including Word 2.0 documents, need it because other converters can return binary data or incorrect text.
 
 | Input | Converter | Installation |
 | --- | --- | --- |
@@ -32,56 +34,106 @@ LibreOffice is not required for JAR itself. Some very old Word files, including 
 | Legacy DOC | `wvWare` fallback | `brew install wv` |
 | DOC still unreadable after those converters | LibreOffice fallback | `brew install --cask libreoffice` |
 
-JAR runs converters locally. LibreOffice is detected through `soffice` on PATH or its standard macOS application path, and runs headlessly with temporary output and a separate temporary profile. Source documents are unchanged. Extracted text is sent to your configured DuckDB server for storage. In remote mode, passages and prompts are also sent to your configured model endpoints.
+JAR runs converters locally. LibreOffice is detected through `soffice` on PATH or its standard macOS application path, and runs headlessly with temporary output and a separate temporary profile. Source documents are unchanged. Extracted text is sent to your configured DuckDB server for storage. Passages, questions, and reference-translation text are also sent to your configured model endpoints.
 
-## Local setup
+## Endpoint configuration
 
 ### Quick start
 
-With Go 1.27.3+, a C compiler, and Docker Desktop running (see [Requirements](#requirements)):
+For a new checkout, create `.env` from `.env.example` and replace the example endpoint/token settings. Preserve any existing `.env` and migrate its keys instead of overwriting it.
+
+```dotenv
+CHAT_URL=https://chat.example.com
+EMBEDDING_URL=https://embedding.example.com
+DB_URL=quack:duckdb.example.com:9494
+DB_TOKEN=<your-server-token>
+```
+
+Both model URLs are explicit; leaving an endpoint empty does not select local inference. URLs can include `/v1`, and a bare model host/port is treated as HTTP. The client uses `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models`; it does not send API-key authentication headers. Use endpoints configured for that access model.
+
+Run these commands after the services are available:
 
 ```bash
-git clone https://github.com/brito-rafa/jar.git
-cd jar
-make local-db-up
+make check-connectivity
 make index DOCS="/absolute/path/to/your/documents"
-make status
+# Wait for indexing to finish before starting chat.
 make chat-web
 ```
 
-Replace `DOCS` with one or more **existing directories separated by `;`** containing your PDF, DOC, DOCX, or TXT files. For PDFs, install Poppler with `brew install poppler`; Word converter options are in [Requirements](#requirements). The first run downloads dependencies and models. `make chat` opens the browser at `http://127.0.0.1:18080`.
+Indexing checks the embedding API and database TCP connection before starting. Both chat targets check the chat API, embedding API, and database TCP connection; a failed check stops startup. Use `make chat-terminal` for terminal chat. Later starts only need the chat command when the saved index is already ready. `make index` fails immediately if `DOCS` is missing, blank, contains an empty list entry, or any entry is nonexistent or a file rather than a directory. It has no default. Chat, help, status, and metadata commands do not require `DOCS`.
 
-`make index` fails immediately if `DOCS` is missing, blank, contains an empty list entry, or any entry is nonexistent or a file rather than a directory. `DOCS` has no default; it can also be explicitly exported in your shell. Chat, help, database setup, status, and metadata commands do not require it.
+### Database transport
 
-### Database
+`DB_URL` selects the DuckDB Quack endpoint for index, chat, metadata, status, and reset. Set `DB_TOKEN` to the token configured on that service. For a database intentionally serving plain HTTP, set `DB_DISABLE_SSL=true` (default `false`), or pass `-db-disable-ssl` directly. This sends the database token without application TLS; use it only over a trusted encrypted network. A Tailscale connection encrypts traffic between its peers.
 
-`make` uses `config/manifests/compose/compose.yaml` with the repository root as the Compose project directory, preserving relative mount paths and the project name.
+Keep using Quack while the database server runs; do not open its database file from another DuckDB process. Back up files only after stopping the owning database process cleanly. This repository does not start, stop, relocate, or reset database files through Docker Compose; that setup lives in [local-jar](https://github.com/brito-rafa/local-jar).
 
-Make creates `DB_DATA_DIR` automatically if it is missing, including parent directories. Empty paths, existing files, and directories that cannot be created cause setup to fail. `make local-db-up` creates a private, ignored `.env` with a random token and waits for the database health check. The service publishes **127.0.0.1:9494** and bind-mounts the project’s `./data` directory to `/data`, so the database is stored at **`./data/jar.db` on your host**. Its write-ahead log is stored alongside it. `DB_DATA_DIR` can select another host directory. Change `DB_PORT` in `.env` and rerun `make local-db-up` to select a different host port.
+### Model selection and index compatibility
 
-```bash
-make local-db-logs                    # Follow database logs
-make local-db-down                    # Stop the service, preserving its local database file
-make local-db-up                      # Start again with stored data intact
-```
+`CHAT_MODEL` and `EMBEDDING_API_MODEL` select the API model IDs sent to their respective endpoints. If omitted, each endpoint must advertise exactly one model through `/v1/models`.
 
-Do not delete `jar.db` or its WAL unless you intend to erase the index. `.env` contains the authentication token: do not commit it. Keep the same token for both the server and application commands. The default connection is plain HTTP over loopback TCP; access from another machine requires deliberate port/TLS configuration. The single-user token permits SQL access; chat only issues read queries, but it is not a separate server-enforced read-only role.
+`EMBEDDING_MODEL` is a separate **canonical embedding identity** stored with the index and included in the corpus fingerprint. It retains the previous default, `bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0`, with `DIMENSIONS=768`. The default describes the existing Granite index configuration; it does not download or choose a remote server's weights. Set `EMBEDDING_API_MODEL` when the server uses an alias such as `granite-embedding`.
 
-To choose another directory, set `DB_DATA_DIR=/absolute/path/to/database` in `.env`, or run:
+The embedding service must implement the indexed model with matching preprocessing and vector dimensions. JAR checks vector sizes but cannot prove that an API alias serves identical weights. Keep `EMBEDDING_MODEL`, dimensions, source directory labels, and embedding behavior unchanged to reuse an existing index across this split. A repository change alone requires no schema migration or reindex. A different embedding model or preprocessing requires rebuilding the index; matching vector sizes alone is insufficient. Chat reads the canonical embedding identity from the existing index.
+
+### Check connectivity and authentication
 
 ```bash
-make local-db-up DB_DATA_DIR="/absolute/path/to/database"
+make check-connectivity
+# Or run the script directly:
+./hack/check-connectivity.sh
 ```
 
-Keep the same directory for later database commands. `make local-db-check` creates it if needed without starting Docker. `local-db-init`, `local-db-up`, `local-db-start`, and `local-db-reset` run this check before proceeding. Running Compose directly requires the directory to exist.
+The script reads the repository's `.env` regardless of the current working directory. Explicit process environment values override file settings. It checks configured embedding/chat endpoints with small synthetic requests, and database TCP reachability. A chat check generates up to 32 tokens and reports request time and throughput when token usage is available. These timings include network and prompt-processing time. Connectivity checks do not validate the database token; run `make status` to check authentication without changing data.
 
-### Local database storage
+### Direct CLI options
 
-The container mounts `DB_DATA_DIR` (default `./data`) at `/data`; the active database is **`./data/jar.db`**, with any WAL alongside it. Keep using Quack while the server runs; do not open the same file from another DuckDB process. Back up or copy the database only after stopping the server cleanly.
+Make reads `.env` for its commands. For direct Go/binary calls, export the relevant settings in the process environment or pass endpoint/model flags explicitly; the Go commands do not parse `.env` themselves.
 
-Earlier installations used a named Docker volume. Changing the mount alone does not migrate that database. Stop the service, preserve any pre-existing local `jar.db`, and copy the stopped volume's database and WAL into `./data` before restarting. Keep the old volume until the migrated index is verified. `data/training/` and backups remain local and Git-ignored.
+```bash
+export DB_TOKEN='<your-server-token>'
 
-Integration tests must use a separate temporary `DB_DATA_DIR` and port. A different Compose project name alone does not isolate a bind-mounted database.
+go run ./cmd/jar-index -docs "/path/to/documents" \
+  -db-url quack:duckdb.example.com:9494 \
+  -embedding-url https://embedding.example.com \
+  -embedding-api-model granite-embedding
+
+go run ./cmd/jar-index -status -db-url quack:duckdb.example.com:9494
+
+go run ./cmd/jar-chat -db-url quack:duckdb.example.com:9494 \
+  -chat-url https://chat.example.com -chat-model ministral-3-8b \
+  -embedding-url https://embedding.example.com \
+  -embedding-api-model granite-embedding
+```
+
+Use `make build` for `bin/jar-index` and `bin/jar-chat`. Run `make cli-help`, `go run ./cmd/jar-index -help`, or `go run ./cmd/jar-chat -help` for all flags. The indexer accepts only embedding model settings; status, metadata, and reset do not call model endpoints.
+
+### Embedding input limits
+
+For llama.cpp servers reporting a structured context-limit error, JAR retries embedding requests using the server tokenizer and token arrays truncated to the reported limit, retaining boundary special tokens. Original indexed text is unchanged. Other HTTP errors fail with their status and structured error type; server response text and document content are not logged. Servers without a compatible tokenizer must accept the input length or require smaller document passages.
+
+Indexing installs and loads the VSS extension on the connected DuckDB server before creating the index. The server needs extension-download access on first use; installing VSS on the client alone does not provision the server.
+
+### Parameter migration
+
+Remote/local provider selection has been removed. Update an existing ignored `.env` to the new names; old `REMOTE_*`, `JAR_REMOTE_*`, and `remote-*` parameters are not aliases.
+
+| Previous remote setting | Remote JAR setting |
+| --- | --- |
+| `REMOTE_CHAT` / `-remote-chat` | `CHAT_URL` / `-chat-url` |
+| `REMOTE_EMBEDDING` / `-remote-embedding` | `EMBEDDING_URL` / `-embedding-url` |
+| `REMOTE_CHAT_MODEL` / `-remote-chat-model` | `CHAT_MODEL` / `-chat-model` |
+| `REMOTE_EMBEDDING_MODEL` / `-remote-embedding-model` | `EMBEDDING_API_MODEL` / `-embedding-api-model` |
+| `REMOTE_DB=host:port` | `DB_URL=quack:host:port` |
+| `REMOTE_DB_TOKEN` | `DB_TOKEN` |
+| `REMOTE_DB_DISABLE_SSL` | `DB_DISABLE_SSL` |
+| `make remote-index` | `make index` |
+| `make remote-chat` | `make chat-web` |
+| `make remote-db-reset` | `make db-reset` |
+
+Keep the existing canonical `EMBEDDING_MODEL` and `DIMENSIONS` for the saved index. The previous local `CHAT_MODEL` GGUF download reference is not automatically an API model ID: use the service's actual ID or leave `CHAT_MODEL` empty for discovery. Compose settings such as `DB_PORT` and `DB_DATA_DIR` belong in `local-jar`.
+
+This split does not move credentials, database files, document collections, training data, or cached models. Both applications can connect to an existing compatible database, but finish indexing before starting chat and run only one indexer at a time. Preserve existing database files, persistent volumes, and backups.
 
 ## Kubernetes setup
 
@@ -129,9 +181,9 @@ kubectl apply -f data/k8s/duckdb.yaml
 kubectl rollout status deployment/duckdb
 ```
 
-The generated file is ignored local content containing a credential. Copy its token privately into `REMOTE_DB_TOKEN` in `.env`. Preserve the generated file and token on subsequent runs rather than generating a replacement for an existing deployment.
+The generated file is ignored local content containing a credential. Copy its token privately into `DB_TOKEN` in `.env`. Preserve the generated file and token on subsequent runs rather than generating a replacement for an existing deployment.
 
-The manifest stores `/data/lab.duckdb` on the `duckdb-data` 20 GiB PVC. Quack listens inside the pod on loopback; an nginx sidecar exposes it through `svc/duckdb:9494`. This storage is separate from local Compose's `DB_DATA_DIR/jar.db`. Keep the PVC to preserve the index, and stop the owning database process cleanly before file-level backups. The cluster needs a working storage provisioner and extension-download access.
+The manifest stores `/data/lab.duckdb` on the `duckdb-data` 20 GiB PVC. Quack listens inside the pod on loopback; an nginx sidecar exposes it through `svc/duckdb:9494`. The Compose service in [local-jar](https://github.com/brito-rafa/local-jar) owns its own database path and is separate from this PVC. Keep the PVC to preserve the index, and stop the owning database process cleanly before file-level backups. The cluster needs a working storage provisioner and extension-download access.
 
 ### Expose the service URLs
 
@@ -148,22 +200,22 @@ These commands bind to loopback. `hack/k8s-setup/04-portforward.sh` instead bind
 Configure the client `.env` for the loopback forwards:
 
 ```dotenv
-REMOTE_EMBEDDING=http://127.0.0.1:8081
-REMOTE_CHAT=http://127.0.0.1:8080
-REMOTE_DB=127.0.0.1:9494
-REMOTE_DB_TOKEN=<token-from-your-private-duckdb-manifest>
-REMOTE_DB_DISABLE_SSL=true
-REMOTE_EMBEDDING_MODEL=granite-embedding
-REMOTE_CHAT_MODEL=ministral-3-8b
+EMBEDDING_URL=http://127.0.0.1:8081
+CHAT_URL=http://127.0.0.1:8080
+DB_URL=quack:127.0.0.1:9494
+DB_TOKEN=<token-from-your-private-duckdb-manifest>
+DB_DISABLE_SSL=true
+EMBEDDING_API_MODEL=granite-embedding
+CHAT_MODEL=ministral-3-8b
 ```
 
-For a client on another machine, replace loopback with the deliberately exposed server address. See [Remote connectivity](#remote-connectivity) for TLS and endpoint settings.
+For a client on another machine, replace loopback with the deliberately exposed server address. See [Endpoint configuration](#endpoint-configuration) for TLS and endpoint settings.
 
 ```bash
 make check-connectivity
-make remote-index DOCS="/absolute/path/to/documents"
+make index DOCS="/absolute/path/to/documents"
 make status
-make remote-chat
+make chat-web
 ```
 
 The browser chat uses port 18080 by default, separate from the forwarded model port 8080. Document extraction happens on the client; embeddings and generation run remotely.
@@ -172,76 +224,7 @@ The browser chat uses port 18080 by default, separate from the forwarded model p
 
 `hack/k8s-setup/05-aigateway.sh` installs Envoy Gateway and AI Gateway, applies a gateway manifest, and forwards the resulting service on port 8080. It still refers to `ai-gateway.yaml` in the working directory. Use the installation commands in that script, then apply `config/manifests/k8s/ai-gateway/example-ai-gateway.yaml` in place of the old path and use its service-discovery/port-forward commands. Stop the direct chat forward first, or choose a different local gateway port.
 
-The gateway routes requests by model ID to the predictors in the `default` namespace. Set both `REMOTE_CHAT` and `REMOTE_EMBEDDING` to the gateway URL, retaining the explicit model IDs above. The database keeps its own endpoint. This gateway is optional; direct predictor URLs are sufficient.
-
-## Remote connectivity
-
-Configure the endpoints and models, check the connections, then index documents before starting chat.
-
-### Endpoints and database transport
-
-Set the following keys in the ignored `.env` file:
-
-```dotenv
-REMOTE_EMBEDDING=your-server.example:8081
-REMOTE_CHAT=your-server.example:8080
-REMOTE_DB=your-server.example:9494
-REMOTE_DB_TOKEN=<remote-server-token>
-```
-
-`REMOTE_DB` selects the remote database for index, chat, metadata, and status. Its token stays separate from the local Docker token.
-
-For a remote DuckDB server intentionally serving plain HTTP, set `REMOTE_DB_DISABLE_SSL=true` (default `false`). Direct CLI calls can use `--db-disable-ssl`. This sends the database token without application TLS; use it only over a trusted encrypted network. If using Tailscale, traffic between peers is encrypted by the Tailscale connection.
-
-Make reads `.env` and bridges the endpoint and database settings to `JAR_REMOTE_*` variables for child processes. Do not source `.env` as a shell script.
-
-### Model selection and index compatibility
-
-Optional `REMOTE_CHAT_MODEL` and `REMOTE_EMBEDDING_MODEL` select API model IDs. If omitted, each endpoint must advertise exactly one model via `/v1/models`.
-
-`EMBEDDING_MODEL` remains the canonical identity stored with the index; the remote API alias is separate. The remote embedding server must serve that exact model with the same preprocessing and dimensions. JAR checks vector sizes; it cannot prove that an API alias serves identical weights. Changing the embedding model requires rebuilding the index. Existing batching, deduplication, citations and reference translations apply to both providers.
-
-### Check connectivity and authentication
-
-Run either command to check every configured service (Python 3 is required):
-
-```bash
-make check-connectivity
-# Or run the script directly:
-./hack/check-connectivity.sh
-```
-
-The checks cover:
-
-- Granite: a small multilingual embedding request.
-- Ministral: its model-list endpoint and a short chat completion, up to 32 tokens with a 60-second timeout.
-- DuckDB: a TCP connection. This does not validate the database token; run `make status` to check authentication without changing data. Local file details in that output still describe `DB_DATA_DIR`.
-
-The generation check reports total request time and, when the server supplies completion-token usage, tokens per second. These values include network and prompt-processing time.
-
-The script reads the repository’s `.env` regardless of the current working directory. For direct script calls, explicit `REMOTE_*` environment values override the file, and application-level `JAR_REMOTE_*` values take highest precedence. Empty endpoints skip a service, including explicit empty environment overrides. Failures return a nonzero exit code.
-
-### Run remote indexing and chat
-
-Both remote targets require all four endpoint/token settings above and run connectivity checks before starting. Any failed check prevents the application from starting.
-
-```bash
-make remote-index DOCS="/path/to/documents"
-# Wait for indexing to finish, then start browser chat:
-make remote-chat
-```
-
-`remote-index` uses remote embeddings and the remote database. `remote-chat` uses both remote models and the remote database. Fully remote runs skip local model downloads and Metal initialization. Ordinary `make index` and `make chat` retain local Kronk inference.
-
-Indexing installs and loads the VSS extension on the connected DuckDB server before creating the index. The server needs extension-download access on first use; installing VSS on the client alone does not provision the server.
-
-### Direct CLI options
-
-For direct CLI use, pass `--remote-chat`, `--remote-embedding`, and optionally `--remote-chat-model` / `--remote-embedding-model`; the indexer accepts only the embedding flags. An empty endpoint retains local inference. Remote failures are reported without automatic local fallback.
-
-### Remote embedding input limits
-
-For llama.cpp servers reporting a structured context-limit error, JAR retries embedding requests using the server tokenizer and token arrays truncated to the reported limit, retaining boundary special tokens. Original indexed text is unchanged. Other HTTP errors fail with their status and structured error type; server response text and document content are not logged. Servers without a compatible tokenizer must accept the input length or require smaller document passages.
+The gateway routes requests by model ID to the predictors in the `default` namespace. Set both `CHAT_URL` and `EMBEDDING_URL` to the gateway URL, retaining the explicit model IDs above. The database keeps its own endpoint. This gateway is optional; direct predictor URLs are sufficient.
 
 ## Indexing performance and batching
 
@@ -250,14 +233,11 @@ For llama.cpp servers reporting a structured context-limit error, JAR retries em
 The completed-embedding queue defaults to 16 batches, independently of worker concurrency. With batches of 8, it buffers up to 128 completed chunks while inserts run. Additional chunks may be in flight or awaiting an insert. This bounds memory without forcing a single embedding worker to pause after one queued batch. A larger buffer can reduce temporary backpressure; it cannot overcome a sustained database bottleneck.
 
 ```bash
-# One remote embedding worker, 8 chunks per request, 128-chunk queue.
-make remote-index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BATCH_SIZE=8 EMBEDDING_BUFFER_BATCHES=16
+# One embedding worker, 8 chunks per request, 128-chunk queue.
+make index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BATCH_SIZE=8 EMBEDDING_BUFFER_BATCHES=16
 
 # Compare larger requests while retaining a 128-chunk queue.
-make remote-index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BATCH_SIZE=16 EMBEDDING_BUFFER_BATCHES=8
-
-# Same option is available for local inference.
-make index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BUFFER_BATCHES=16
+make index DOCS="/path/to/documents" EMBEDDING_WORKERS=1 EMBEDDING_BATCH_SIZE=16 EMBEDDING_BUFFER_BATCHES=8
 ```
 
 The direct indexer flag is `--embedding-buffer-batches=16`. Set `EMBEDDING_BUFFER_BATCHES=16` in `.env` to persist it. An already unchanged index is reused; add `FORCE_INDEX=true` only when intentionally rebuilding it for a comparison.
@@ -280,33 +260,24 @@ Each remote chat completion logs a JSON `model_response_metrics` event with `usa
 
 | Make variable | Default / purpose |
 | --- | --- |
-| `GO`, `DOCKER` | Executable overrides; defaults to `go`, `docker` |
-| `DB_URL` | `quack:127.0.0.1:9494`, adjusted to `DB_PORT` |
-| `DB_PORT` | Published host port; default `9494` |
-| `DB_DATA_DIR` | Host directory, default `./data`; contains `jar.db`; created by Make if missing |
-| `CHAT_PORT` | Local browser chat TCP port; default `18080` |
-| `OPEN_BROWSER` | Open the default browser on `make chat`; default `true` |
-| `JAR_DB_TOKEN` | Token from `.env`, exported to both commands |
+| `GO` | Go executable override; defaults to `go` |
+| `CHAT_URL` | Required chat API URL for chat |
+| `EMBEDDING_URL` | Required embedding API URL for indexing/chat |
+| `DB_URL` | Required DuckDB Quack endpoint, such as `quack:db.example.com:9494` |
+| `DB_TOKEN` | Authentication token configured on the database server |
+| `DB_DISABLE_SSL` | `false`; use `true` only for intentional plain HTTP database transport |
+| `CHAT_MODEL` | Empty; discover the sole model advertised by the chat endpoint |
+| `EMBEDDING_API_MODEL` | Empty; discover the sole model advertised by the embedding endpoint |
+| `EMBEDDING_MODEL` | Canonical index identity: `bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0` |
+| `DIMENSIONS` | `768`; must match the indexed embedding model output |
 | `DOCS` | Semicolon-separated directories to scan recursively; indexing only |
-| `DIMENSIONS` | `768`; must match the embedding model output |
-| `EMBEDDING_MODEL` | `bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0` |
-| `CHAT_MODEL` | `mistralai/Ministral-3-8B-Instruct-2512-GGUF:Q4_K_M` |
+| `CHAT_PORT` | Local browser chat TCP port; default `18080` |
+| `CHAT_HOST` | `127.0.0.1`; browser listener address |
+| `CHAT_ALLOW_ANY_HOST` | `false`; whether to accept arbitrary request hostnames |
+| `CHAT_PUBLIC_URL` | Empty; optional exact public origin for a reverse proxy |
+| `OPEN_BROWSER` | `true`; open the default browser on `make chat-web` |
 
-Mistral supplies the chat model; IBM supplies the embedding model, converted to GGUF by bartowski. No Qwen model is selected. Kronk keeps model downloads in its usual `~/.kronk` store, and automatically detects Metal support. Model licenses and converter provenance should be reviewed separately.
-
-### Direct commands
-
-Load the generated database token before using Go commands or binaries directly (Make reads `.env` itself):
-
-```bash
-export JAR_DB_TOKEN="$(sed -n 's/^JAR_DB_TOKEN=//p' .env)"
-
-go run ./cmd/jar-index -docs "/path/to/documents" -db-url quack:127.0.0.1:9494
-go run ./cmd/jar-index -status -db-url quack:127.0.0.1:9494
-go run ./cmd/jar-chat -db-url quack:127.0.0.1:9494
-```
-
-Use `make build` for `bin/jar-index` and `bin/jar-chat`, or `make cli-help` for all flags. Old combined-command flags such as `-db` and `-docs` on chat are no longer accepted.
+The included KServe examples serve IBM Granite Embedding 278M Multilingual and Mistral Ministral 3 8B Instruct GGUF models. Model/runtime downloads happen on the servers, not in this Go client. Review model licenses and conversion provenance separately.
 
 ## Browser chat
 
@@ -369,31 +340,25 @@ Override settings when running indexing:
 make index DOCS="/path/to/documents" DOCUMENT_WORKERS=4 EMBEDDING_WORKERS=2
 ```
 
-Reduce workers if memory usage is high, especially with LibreOffice. More workers do not always mean faster indexing; compare the reported stage timings on your documents. Use `FORCE_INDEX=true` to benchmark an unchanged corpus, with no chat model running at the same time.
+Reduce workers if memory usage is high, especially with LibreOffice. More workers do not always mean faster indexing; compare the reported stage timings on your documents. Use `FORCE_INDEX=true` to benchmark an unchanged corpus, while avoiding competing requests to the same model service.
 
-## Reset and erase the database
+## Reset the connected index
 
-To permanently erase the local database and start with an empty index:
-
-```bash
-make local-db-reset CONFIRM=erase
-```
-
-Without `CONFIRM=erase`, the command refuses to proceed. Stop indexing and chat first. This deletes only **`jar.db` and `jar.db.wal` inside `DB_DATA_DIR`**, including their stored passages, embeddings, and index metadata, then restarts DuckDB. Training files, backups, source documents, and the rest of `data/` are preserved. Run `make index DOCS="/path/to/documents"` afterwards to rebuild the index.
-
-The token in `.env`, source documents, cached models, training files, and database backups are preserved. This target resets the local Compose service, regardless of a `DB_URL` override; it does not erase an arbitrary remote endpoint. Normal `make local-db-down` preserves data.
-
-To erase only the JAR index on the configured remote server:
+To erase only JAR's index tables on the configured database server:
 
 ```bash
-make remote-db-reset CONFIRM=erase
+make db-reset CONFIRM=erase
 ```
 
-This requires `REMOTE_DB` and `REMOTE_DB_TOKEN`, connects directly to that endpoint, and transactionally drops JAR's `items`, `item_sources`, and `jar_index_metadata` tables. Unrelated tables, the server process, and local files are preserved. It does not require model endpoints or load models. Stop indexing and chat before resetting, then rebuild with `make remote-index DOCS="/path/to/documents"`.
+Without `CONFIRM=erase`, the command refuses to proceed. Stop indexing and chat first. This connects to `DB_URL` using `DB_TOKEN` and transactionally drops JAR's `items`, `item_sources`, and `jar_index_metadata` tables. Unrelated tables, the server process, and local files are preserved. It does not require model endpoints or load models. Run `make index DOCS="/path/to/documents"` afterwards to rebuild the index.
 
 ## Index status
 
-The [status command](setup.md#database) also displays the configured local database directory and `jar.db` size in bytes and MiB (or reports that the file is missing). These local file details describe `DB_DATA_DIR`, even when `DB_URL` points to a remote server. Status reports readiness, chunk count, embedding identity, dimensions, and completion timestamp in UTC. It does not count source documents or maintain a per-file skip history. Runtime warnings identify skipped files.
+```bash
+make status
+```
+
+Status reports the connected endpoint, readiness, chunk count, embedding identity, vector dimensions, and completion timestamp in UTC. It does not load models, count source documents, maintain a per-file skip history, or inspect a local database file. Runtime indexing warnings identify skipped files.
 
 ## Metadata maintenance
 
@@ -408,21 +373,18 @@ make metadata
 ```bash
 make test
 make vet
+make build
 ```
 
-Converter tests skip when their tools are unavailable. Optional network integration tests require the running service and the token:
+Use native ARM64 Go on Apple Silicon, for example `make test GO=/opt/homebrew/bin/go`. Run `gofmt` on changed Go files, and `staticcheck ./...` when available. Relevant concurrency changes also require `go test -race ./pkg/chat ./pkg/duck`.
+
+Ordinary tests use synthetic documents and fake model callbacks; they do not download inference models or require running services. Converter tests skip when their tools are unavailable. Remote database integration tests remain opt-in. Inspect a test before enabling it: some create/drop corpus tables and must use a dedicated disposable server, token, and nondefault port. Do not point destructive fixtures at a real index, and clean up only resources created for the test. The local-model live test belongs only to [local-jar](https://github.com/brito-rafa/local-jar).
+
+The destructive database fixtures select isolated endpoints with `JAR_INDEX_TEST_URL`, `JAR_METADATA_TEST_URL`, or `JAR_LOAD_TEST_URL` and read `DB_TOKEN` from the environment. For example, after provisioning a disposable authenticated database on a dedicated test port:
 
 ```bash
-export JAR_DB_TOKEN="$(sed -n 's/^JAR_DB_TOKEN=//p' .env)"
-JAR_TEST_REMOTE=1 go test ./pkg/duck -run TestRemote -v
+export DB_TOKEN='<disposable-server-token>'
+JAR_INDEX_TEST_URL=quack:127.0.0.1:19494 go test ./pkg/duck -run '^TestRemoteIndexReplacesCatalogTransactionally$' -v
 ```
 
-Verified on this Apple Silicon Mac: sample indexing with Granite only, status without models, Spanish chat through the remote index, authentication rejection, Unicode/NUL roundtrips, transaction rollback, container restart persistence, unchanged-index reuse, empty-index chat rejection, and explicit database reset in an isolated Compose project. Unit tests, Go vet, staticcheck, and command builds pass.
-
-For an optional local-model check of an English answer with multilingual context:
-
-```bash
-JAR_LIVE_CHAT_TEST=1 go test ./pkg/chat -run TestLiveEnglishMultilingualContext -v
-```
-
-This opt-in test loads the local chat model; ordinary tests do not.
+`JAR_TEST_REMOTE=1` enables older transaction/authentication tests that use `127.0.0.1:9494` directly. Inspect and isolate that endpoint before enabling them; it must not be the real index.

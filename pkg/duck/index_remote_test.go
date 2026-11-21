@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 )
 
 type fixtureEmbedder struct{}
@@ -26,7 +26,7 @@ func TestRemoteIndexReplacesCatalogTransactionally(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("requires isolated indexing test server")
 	}
-	db, err := OpenRemote(endpoint, os.Getenv("JAR_DB_TOKEN"))
+	db, err := OpenRemote(endpoint, os.Getenv("DB_TOKEN"))
 	if err != nil {
 		t.Fatal(err)
 	}

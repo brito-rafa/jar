@@ -14,7 +14,7 @@ func TestRemoteLoadPoolAndBatches(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("set JAR_LOAD_TEST_URL for isolated remote load checks")
 	}
-	db, err := OpenRemote(endpoint, os.Getenv("JAR_DB_TOKEN"))
+	db, err := OpenRemote(endpoint, os.Getenv("DB_TOKEN"))
 	if err != nil {
 		t.Fatal(err)
 	}

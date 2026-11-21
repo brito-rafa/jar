@@ -10,8 +10,8 @@ import (
 	"github.com/brito-rafa/jar/pkg/catalog"
 	"time"
 
-	"github.com/ardanlabs/kronk/sdk/kronk/model"
 	"github.com/brito-rafa/jar/pkg/inference"
+	"github.com/brito-rafa/jar/pkg/inference/model"
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 

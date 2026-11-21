@@ -1,12 +1,7 @@
-# Two cluster-scoped building blocks, then two InferenceServices that use them.
-#
-#   ClusterStorageContainer "hf-gguf"   handles storageUri values that start with hf-gguf://
-#   ClusterServingRuntime  "llamacpp-rocm"  llama.cpp on ROCm, shared by both models
-#
-# GPU sharing: the AMD device plugin exposes the Radeon as a single amd.com/gpu, so only one
-# pod could hold it. These pods don't request it; they mount /dev/kfd and /dev/dri from the
-# node and run privileged instead. The scheduler no longer tracks the GPU, so VRAM is on us:
-# Ministral Q4_K_M ~5.2 GB + KV cache, Granite Q8_0 ~0.3 GB; that fits the RX 6600's 8 GB.
+# Cluster-scoped resources: one single-file GGUF downloader and two runtimes.
+# Apply before 02-inference-services.yaml.
+# Select runtimes explicitly; CUDA uses NVIDIA, ROCm uses AMD.
+# Images retain upstream moving tags from the original; pin tested digests for reproducibility.
 ---
 # Downloads ONE file from a Hugging Face repo. URI format:
 #   hf-gguf://<org>/<repo>/<path/to/file.gguf>
@@ -35,7 +30,9 @@ spec:
       mkdir -p "$dest"
       echo "hf-gguf: ${url} -> ${out}"
       set -- -fL --retry 5 --retry-all-errors -C - -o "${out}.part"
-      [ -n "${HF_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer ${HF_TOKEN}"
+      if [ -n "${HF_TOKEN:-}" ]; then
+        set -- "$@" -H "Authorization: Bearer ${HF_TOKEN}"
+      fi
       curl "$@" "$url"
       mv "${out}.part" "$out"
       ls -lh "$out"
@@ -64,7 +61,7 @@ metadata:
 spec:
   supportedModelFormats:
   - name: gguf
-    autoSelect: true
+    autoSelect: false
   containers:
   - name: kserve-container
     image: ghcr.io/ggml-org/llama.cpp:server-rocm   # fallback if ROCm balks: ghcr.io/ggml-org/llama.cpp:server-vulkan
@@ -72,8 +69,10 @@ spec:
     env:
     - name: HSA_OVERRIDE_GFX_VERSION   # RX 6600 (gfx1032) isn't on ROCm's support list; present it as gfx1030
       value: "10.3.0"
+    # Retain the original RX 6600 compatibility configuration.
+    # The InferenceService now reserves amd.com/gpu for scheduler accounting.
     securityContext:
-      privileged: true                 # needed to open the node's GPU device nodes without the device plugin
+      privileged: true
     volumeMounts:
     - {name: kfd, mountPath: /dev/kfd}
     - {name: dri, mountPath: /dev/dri}
@@ -88,44 +87,22 @@ spec:
   - {name: kfd, hostPath: {path: /dev/kfd}}
   - {name: dri, hostPath: {path: /dev/dri}}
 ---
-# Chat. Mistral recommends temperature below 0.1 for everyday use; requests can override it.
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
 metadata:
-  name: ministral-3-8b
-  annotations:
-    serving.kserve.io/deploymentMode: Standard
+  name: llamacpp-cuda
 spec:
-  predictor:
-    model:
-      modelFormat:
-        name: gguf
-      runtime: llamacpp-rocm
-      storageUri: hf-gguf://mistralai/Ministral-3-8B-Instruct-2512-GGUF/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf
-      args: ["-m", "/mnt/models/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-             "--alias", "ministral-3-8b", "-c", "4096", "--jinja", "--temp", "0.05"]
-      resources:
-        requests: {cpu: "2", memory: 4Gi}
-        limits: {memory: 8Gi}
----
-# Embeddings: 768-dim vectors, 512-token max input; 4 slots x 512 tokens, and the
-# micro-batch covers a whole input because the model isn't causal.
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: granite-embedding
-  annotations:
-    serving.kserve.io/deploymentMode: Standard
-spec:
-  predictor:
-    model:
-      modelFormat:
-        name: gguf
-      runtime: llamacpp-rocm
-      storageUri: hf-gguf://bartowski/granite-embedding-278m-multilingual-GGUF/granite-embedding-278m-multilingual-Q8_0.gguf
-      args: ["-m", "/mnt/models/granite-embedding-278m-multilingual-Q8_0.gguf",
-             "--alias", "granite-embedding", "--embeddings",
-             "-c", "2048", "-np", "4", "-b", "2048", "-ub", "2048"]
-      resources:
-        requests: {cpu: "1", memory: 512Mi}
-        limits: {memory: 1Gi}
+  supportedModelFormats:
+  - name: gguf
+    autoSelect: false
+  containers:
+  - name: kserve-container
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    args: ["--host", "0.0.0.0", "--port", "8080", "-ngl", "99"]
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+    readinessProbe:
+      httpGet: {path: /health, port: 8080}
+      periodSeconds: 10
+      failureThreshold: 60

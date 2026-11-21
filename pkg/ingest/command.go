@@ -11,6 +11,7 @@ import (
 	"github.com/brito-rafa/jar/pkg/duck"
 	"github.com/brito-rafa/jar/pkg/inference"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -18,11 +19,13 @@ import (
 func Run(args []string) error {
 	f := flag.NewFlagSet("jar-index", flag.ContinueOnError)
 	var c connection.Flags
-	c.Register(f)
+	if err := c.Register(f); err != nil {
+		return err
+	}
 	docs := f.String("docs", "", "Semicolon-separated directories to import recursively (.doc/.docx/.pdf/.txt)")
-	embedding := f.String("embedding-model", inference.DefaultEmbedding, "Embedding model used for documents and questions")
-	remoteEmbedding := f.String("remote-embedding", "", "Remote OpenAI-compatible embedding endpoint; empty uses Kronk")
-	remoteEmbeddingModel := f.String("remote-embedding-model", "", "Remote embedding API model ID; must implement embedding-model")
+	embedding := f.String("embedding-model", inference.DefaultEmbedding, "Canonical embedding identity stored in the index; preserve to reuse existing indexes")
+	embeddingURL := f.String("embedding-url", os.Getenv("EMBEDDING_URL"), "OpenAI-compatible embedding endpoint (required for indexing)")
+	embeddingAPIModel := f.String("embedding-api-model", os.Getenv("EMBEDDING_API_MODEL"), "Embedding API model ID; must serve embedding-model")
 	dimensions := f.Int("dimensions", 768, "Values per embedding vector; must match the model output (Granite 278M: 768)")
 	documentWorkers := f.Int("document-workers", 20, "Concurrent document converters (1-64)")
 	embeddingWorkers := f.Int("embedding-workers", 1, "Concurrent embedding request workers (1-8)")
@@ -65,6 +68,9 @@ func Run(args []string) error {
 	if !*statusOnly && !*metadataOnly && !*reset {
 		if _, err := documentDirectories(*docs); err != nil {
 			return err
+		}
+		if strings.TrimSpace(*embeddingURL) == "" {
+			return fmt.Errorf("embedding-url is required for indexing (or set EMBEDDING_URL)")
 		}
 	}
 
@@ -109,7 +115,7 @@ func Run(args []string) error {
 		fmt.Println("Index unchanged; reusing stored embeddings.")
 		return printStatus(db, c.Endpoint)
 	}
-	krn, err := inference.OpenEmbedding(context.Background(), *embedding, *remoteEmbedding, *remoteEmbeddingModel, *embeddingWorkers)
+	krn, err := inference.OpenEmbedding(context.Background(), *embeddingURL, *embeddingAPIModel)
 	if err != nil {
 		return err
 	}

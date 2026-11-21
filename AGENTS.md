@@ -4,7 +4,7 @@ These instructions apply throughout this repository. Follow explicit user instru
 
 ## Project layout
 
-JAR is a local multilingual RAG application written in Go. Kronk runs local inference through llama.cpp/Metal. DuckDB is a separate container accessed through Quack over TCP.
+JAR is a multilingual RAG client written in Go. Chat and embedding inference use configured OpenAI-compatible HTTP endpoints; DuckDB is a separate service accessed through Quack over TCP. Local Kronk inference and DuckDB Compose setup belong to the independent sibling repository `github.com/brito-rafa/local-jar`. Do not reintroduce provider selection or a Kronk dependency here.
 
 - `cmd/jar-index`: document ingestion, index status, and source metadata maintenance.
 - `cmd/jar-chat`: shared chat engine exposed through browser and terminal interfaces.
@@ -13,10 +13,10 @@ JAR is a local multilingual RAG application written in Go. Kronk runs local infe
 - `pkg/chat/web`: embedded HTML, CSS, and JavaScript; no frontend build tool is required.
 - `pkg/catalog`: filename-derived source metadata.
 - `pkg/duck`: remote SQL, indexing, deduplication, vector search, and source context retrieval.
-- `pkg/inference`: local model/runtime installation and loading.
+- `pkg/inference`: OpenAI-compatible HTTP inference, response metrics, and application-owned request/response types.
 - `pkg/connection`: shared database connection flags.
-- `hack/duck`: DuckDB server initialization.
-- `config/manifests/compose/compose.yaml`: persistent database service.
+- `hack/check-connectivity.sh`: configured model/database connectivity checks.
+- `hack/k8s-setup` and `config/manifests/k8s`: example Kubernetes model and database deployments.
 - `assets/images`: screenshots and other README assets.
 
 Keep the two explicit command entry points. Do not recreate a root `main.go`, bundled document directory, or public prebuilt-chunks input without a user request.
@@ -42,8 +42,8 @@ Keep the two explicit command entry points. Do not recreate a root `main.go`, bu
 
 ## Database and integration testing
 
-- Preserve the main bind-mounted database (`DB_DATA_DIR/jar.db`, default `data/jar.db`) and any legacy Docker volume backups. Never use the main endpoint for tests that create, replace, or drop corpus tables.
-- Use a uniquely named disposable Compose project, a dedicated temporary `DB_DATA_DIR`, and a nondefault port for destructive integration fixtures. A different project name alone does not isolate bind-mounted files. Never use the project’s real `data/` for a destructive test. Make creates missing `DB_DATA_DIR` directories; empty paths and existing files must be rejected. Ensure the test endpoint and token match that disposable service.
+- Preserve all existing database files, persistent volumes, and backups. Never use the main endpoint for tests that create, replace, or drop corpus tables.
+- Use a dedicated disposable database service and a nondefault port for destructive integration fixtures. If using the sibling repository’s Compose service, select a uniquely named project and a dedicated temporary `DB_DATA_DIR`; a different project name alone does not isolate bind-mounted files. Never use a real corpus directory or PVC for destructive tests. Ensure the test endpoint and token match the disposable service.
 - Clean up only containers, volumes, files, and processes created for the test.
 - Keep transaction safety, bounded ingestion concurrency, deduplication, and all source locations intact.
 - Use the existing remote query helpers and their safe argument encoding. Do not interpolate document text or user input into SQL.
@@ -76,8 +76,8 @@ go test -race ./pkg/chat ./pkg/duck
 
 Run `gofmt` on modified Go files. Run `staticcheck ./...` when available. Choose checks appropriate to the change; documentation-only edits do not require loading models or running database integration tests.
 
-Use temporary test directories and fake model callbacks for ordinary tests. Opt-in integration/live-model tests must stay opt-in and use their documented environment variables; inspect a test before enabling it, particularly if it mutates database state.
+Use temporary test directories and fake model callbacks for ordinary tests. Opt-in network integration tests must stay opt-in and use their documented environment variables; inspect a test before enabling it, particularly if it mutates database state.
 
-Keep README examples, Makefile help, CLI flags, and web slash-command help synchronized when behavior changes. `make index` requires an explicit `DOCS` list of existing directories separated by semicolons and must fail before starting Go/model/database work if it is missing or invalid. Chat, status, metadata, help, and database setup do not require `DOCS`.
+Keep README examples, Makefile help, CLI flags, and web slash-command help synchronized when behavior changes. `make index` requires an explicit `DOCS` list of existing directories separated by semicolons and must fail before starting Go/model/database work if it is missing or invalid. Chat, status, metadata, help, and reset do not require `DOCS`. Keep `CHAT_URL`, `EMBEDDING_URL`, `DB_URL`, and `DB_TOKEN` configuration consistent between Make, CLI, connectivity checks, `.env.example`, and documentation. API embedding aliases remain separate from the canonical embedding identity stored in index fingerprints; preserve existing schema and fingerprint compatibility with `local-jar`.
 
 After modifying embedded web assets, rebuild/restart the server for verification; reloading a tab alone does not reload embedded source files. Use sample-data browser fixtures to check UI flows without competing with the user's GPU workload.
