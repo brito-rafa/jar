@@ -1,0 +1,66 @@
+# Template: filled by `make generate-manifests`.
+# Each DOCS directory becomes a read-only hostPath volume mounted at the same
+# path; it must exist on the node that runs the Job (INDEX_NODE_NAME, if set).
+# INDEX_NODE_NAME and IMAGE_PULL_SECRET render as "" and [] when unset.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jar-index
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jar-index
+      annotations:
+        checksum/configmap: ${CONFIGMAP_CHECKSUM}
+        checksum/secret: ${SECRET_CHECKSUM}
+    spec:
+      restartPolicy: Never
+      nodeName: ${INDEX_NODE_NAME}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: ${PLATFORM_ARCH}
+      imagePullSecrets: ${IMAGE_PULL_SECRETS}
+      containers:
+        - name: jar-index
+          image: ${K8S_INDEX_IMAGE}
+          args:
+            - "-skip-if-populated"
+            - "-docs"
+            - "$(DOCS)"
+            - "-embedding-model"
+            - "$(EMBEDDING_MODEL)"
+            - "-dimensions"
+            - "$(DIMENSIONS)"
+            - "-document-workers"
+            - "$(DOCUMENT_WORKERS)"
+            - "-embedding-workers"
+            - "$(EMBEDDING_WORKERS)"
+            - "-embedding-batch-size"
+            - "$(EMBEDDING_BATCH_SIZE)"
+            - "-embedding-buffer-batches"
+            - "$(EMBEDDING_BUFFER_BATCHES)"
+            - "-insert-batch-size"
+            - "$(INSERT_BATCH_SIZE)"
+            - "-force=$(FORCE_INDEX)"
+          envFrom:
+            - configMapRef:
+                name: jar-runtime
+            - secretRef:
+                name: jar-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts: ${DOCS_VOLUME_MOUNTS}
+      volumes: ${DOCS_VOLUMES}

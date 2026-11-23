@@ -1,0 +1,16 @@
+# Static: no settings are substituted here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: jarchat
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: jarchat
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: jar-chat
+  ports:
+    - name: jarchat
+      port: 80
+      targetPort: http

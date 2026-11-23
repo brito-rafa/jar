@@ -1,4 +1,4 @@
-# Two models on two separate GPUs in the same cluster/default namespace.
+# Two models on two separate GPUs in the same cluster and namespace (jar in SETUP.md).
 # Ministral -> NVIDIA RTX 5060 Ti; Granite embeddings -> AMD RX 6600.
 # Resource memory values are host RAM limits, not VRAM limits.
 # One replica per service avoids requesting a second exclusive GPU allocation.

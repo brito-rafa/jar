@@ -13,7 +13,7 @@ from pathlib import Path
 import urllib.parse
 import urllib.request
 
-keys = {'EMBEDDING_URL', 'CHAT_URL', 'DB_URL', 'CHAT_MODEL', 'EMBEDDING_API_MODEL'}
+keys = {'EMBEDDING_URL', 'CHAT_URL', 'DB_URL', 'CHAT_API_MODEL', 'EMBEDDING_API_MODEL'}
 env_file = Path(sys.argv[1])
 if env_file.is_file():
     for line in env_file.read_text().splitlines():
@@ -81,7 +81,7 @@ for service in services:
                 raise ValueError('invalid embedding vector')
             print(f'Embeddings: OK ({len(vector)} dimensions)')
         elif service == 'chat':
-            model = model_name(endpoint, 'CHAT_MODEL')
+            model = model_name(endpoint, 'CHAT_API_MODEL')
             started = time.perf_counter()
             result = request(endpoint, '/v1/chat/completions', {
                 'model': model,

@@ -1,0 +1,59 @@
+# Template: filled by `make generate-manifests`.
+# IMAGE_PULL_SECRET renders as [] when unset.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jar-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jar-chat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jar-chat
+      annotations:
+        checksum/configmap: ${CONFIGMAP_CHECKSUM}
+        checksum/secret: ${SECRET_CHECKSUM}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: ${PLATFORM_ARCH}
+      imagePullSecrets: ${IMAGE_PULL_SECRETS}
+      containers:
+        - name: jar-chat
+          image: ${K8S_CHAT_IMAGE}
+          args:
+            - "-web"
+            - "-host"
+            - "0.0.0.0"
+            - "-port"
+            - "$(CHAT_PORT)"
+            - "-open-browser=false"
+            - "-allow-any-host=$(CHAT_ALLOW_ANY_HOST)"
+            - "-public-url"
+            - "$(CHAT_PUBLIC_URL)"
+          envFrom:
+            - configMapRef:
+                name: jar-runtime
+            - secretRef:
+                name: jar-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: ${CHAT_PORT}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5

@@ -1,13 +1,13 @@
 # Namespace-scoped replacement for the Granite embedding service.
 # Requires the hf-gguf ClusterStorageContainer from example-cluster-serving-runtimes-*
-# Both resources must live in the same namespace; change both if not using default.
+# Both resources must live in the same namespace; change both if not using jar.
 # Stop/delete granite-embedding before applying: the RX 6600 is an exclusive GPU.
 ---
 apiVersion: serving.kserve.io/v1alpha1
 kind: ServingRuntime
 metadata:
   name: qwen3-embedding-8b-rocm
-  namespace: default
+  namespace: jar
 spec:
   supportedModelFormats:
   - name: gguf
@@ -49,7 +49,7 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: qwen3-embedding-8b
-  namespace: default
+  namespace: jar
   annotations:
     serving.kserve.io/deploymentMode: Standard
 spec:

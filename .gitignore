@@ -7,3 +7,5 @@
 /bin/
 /benchmarks/
 /benchmark/
+# Filled by make generate-manifests from .env (paths, Secret); never commit
+/config/manifests/generated/

@@ -5,7 +5,7 @@
 #   client ──> Envoy :80 ──┬─ model=ministral-3-8b    ──> ministral-3-8b-predictor:80
 #                          └─ model=granite-embedding ──> granite-embedding-predictor:80
 #
-# Based on the project's basic example for v1.2.1; everything lives in the "default" namespace
+# Based on the project's basic example for v1.2.1; everything lives in the "jar" namespace
 # next to the InferenceServices.
 ---
 apiVersion: gateway.networking.k8s.io/v1
@@ -20,7 +20,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
   name: ai-gateway
-  namespace: default
+  namespace: jar
 spec:
   provider:
     type: Kubernetes
@@ -33,7 +33,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: ai-gateway
-  namespace: default
+  namespace: jar
 spec:
   gatewayClassName: ai-gateway
   listeners:
@@ -51,7 +51,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy
 metadata:
   name: ai-gateway-buffer-limit
-  namespace: default
+  namespace: jar
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
@@ -64,7 +64,7 @@ apiVersion: aigateway.envoyproxy.io/v1beta1
 kind: AIGatewayRoute
 metadata:
   name: kserve-models
-  namespace: default
+  namespace: jar
 spec:
   parentRefs:
   - name: ai-gateway
@@ -94,7 +94,7 @@ apiVersion: aigateway.envoyproxy.io/v1beta1
 kind: AIServiceBackend
 metadata:
   name: ministral-3-8b
-  namespace: default
+  namespace: jar
 spec:
   schema:
     name: OpenAI
@@ -107,7 +107,7 @@ apiVersion: aigateway.envoyproxy.io/v1beta1
 kind: AIServiceBackend
 metadata:
   name: granite-embedding
-  namespace: default
+  namespace: jar
 spec:
   schema:
     name: OpenAI
@@ -122,20 +122,20 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: Backend
 metadata:
   name: ministral-3-8b
-  namespace: default
+  namespace: jar
 spec:
   endpoints:
   - fqdn:
-      hostname: ministral-3-8b-predictor.default.svc.cluster.local
+      hostname: ministral-3-8b-predictor.jar.svc.cluster.local
       port: 80
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: Backend
 metadata:
   name: granite-embedding
-  namespace: default
+  namespace: jar
 spec:
   endpoints:
   - fqdn:
-      hostname: granite-embedding-predictor.default.svc.cluster.local
+      hostname: granite-embedding-predictor.jar.svc.cluster.local
       port: 80

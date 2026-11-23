@@ -1,0 +1,13 @@
+# Template: `make generate-manifests` fills the placeholders from ENV_FILE and
+# writes the private bundle to config/manifests/generated/ (Git-ignored).
+# Do not apply this directory directly; use `make deploy`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ${NAMESPACE}
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - job.yaml
+  - deployment.yaml
+  - service.yaml

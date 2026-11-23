@@ -174,8 +174,6 @@ func nonPersonTitle(phrase, before string) bool {
 			key = "deficiencies"
 		case "propensoes", "propensiones", "propensities":
 			key = "propensities"
-		case "logosofia", "logosophy":
-			key = "logosophy"
 		case "espirito", "espiritu", "spirit":
 			key = "spirit"
 		case "etica", "ethics":

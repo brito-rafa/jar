@@ -33,7 +33,7 @@ func Run(args []string) error {
 	openBrowser := f.Bool("open-browser", false, "Open the browser after the web server starts")
 	chatURL := f.String("chat-url", os.Getenv("CHAT_URL"), "OpenAI-compatible chat endpoint (required)")
 	embeddingURL := f.String("embedding-url", os.Getenv("EMBEDDING_URL"), "OpenAI-compatible embedding endpoint (required)")
-	chat := f.String("chat-model", os.Getenv("CHAT_MODEL"), "Chat API model ID; empty discovers the sole advertised model")
+	chatAPIModel := f.String("chat-api-model", os.Getenv("CHAT_API_MODEL"), "Chat API model ID; empty discovers the sole advertised model")
 	embeddingAPIModel := f.String("embedding-api-model", os.Getenv("EMBEDDING_API_MODEL"), "Embedding API model ID; must serve the indexed embedding model")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -67,7 +67,7 @@ func Run(args []string) error {
 		return err
 	}
 	defer krnEmbed.Unload(context.Background())
-	krnChat, err := inference.OpenChat(context.Background(), *chatURL, *chat)
+	krnChat, err := inference.OpenChat(context.Background(), *chatURL, *chatAPIModel)
 	if err != nil {
 		return err
 	}

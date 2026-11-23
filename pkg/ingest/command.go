@@ -17,6 +17,10 @@ import (
 
 // Run imports documents without loading a chat model. Status loads no model.
 func Run(args []string) error {
+	return run(args, connection.Flags.Open)
+}
+
+func run(args []string, openDB func(connection.Flags) (*sql.DB, error)) error {
 	f := flag.NewFlagSet("jar-index", flag.ContinueOnError)
 	var c connection.Flags
 	if err := c.Register(f); err != nil {
@@ -37,11 +41,15 @@ func Run(args []string) error {
 	reset := f.Bool("reset", false, "Erase JAR index tables on the connected database; requires -confirm=erase")
 	confirm := f.String("confirm", "", "Explicit confirmation for -reset: erase")
 	statusOnly := f.Bool("status", false, "Show database status without reading documents or loading models")
+	skipIfPopulated := f.Bool("skip-if-populated", false, "Exit successfully without indexing when the database already contains any chunk")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if f.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
+	}
+	if *skipIfPopulated && (*reset || *statusOnly || *metadataOnly) {
+		return fmt.Errorf("-skip-if-populated cannot be combined with -reset, -status or -metadata")
 	}
 	if *reset && (*statusOnly || *metadataOnly || *docs != "") {
 		return fmt.Errorf("-reset cannot be combined with -status, -metadata or -docs")
@@ -65,6 +73,23 @@ func Run(args []string) error {
 	if *metadataOnly && *statusOnly {
 		return fmt.Errorf("choose -metadata or -status")
 	}
+	var db *sql.DB
+	if *skipIfPopulated {
+		var err error
+		db, err = openDB(c)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		populated, err := duck.HasChunks(db)
+		if err != nil {
+			return fmt.Errorf("check existing chunks: %w", err)
+		}
+		if populated {
+			fmt.Println("Database already contains chunks; skipping indexing.")
+			return nil
+		}
+	}
 	if !*statusOnly && !*metadataOnly && !*reset {
 		if _, err := documentDirectories(*docs); err != nil {
 			return err
@@ -74,11 +99,14 @@ func Run(args []string) error {
 		}
 	}
 
-	db, err := c.Open()
-	if err != nil {
-		return err
+	if db == nil {
+		var err error
+		db, err = openDB(c)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
 	}
-	defer db.Close()
 	if *reset {
 		if err := duck.Reset(db); err != nil {
 			return fmt.Errorf("reset JAR index: %w", err)

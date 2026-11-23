@@ -17,6 +17,12 @@ JAR is a multilingual RAG client written in Go. Chat and embedding inference use
 - `pkg/connection`: shared database connection flags.
 - `hack/check-connectivity.sh`: configured model/database connectivity checks.
 - `hack/k8s-setup` and `config/manifests/k8s`: example Kubernetes model and database deployments.
+- `config/manifests/kustomize`: committed application Kustomize templates with `${KEY}` placeholders only; never put real settings, host paths, or tokens there.
+- `make generate-manifests`: offline application Kustomize bundle generation and in-memory validation from `ENV_FILE`; default output `./config/manifests/generated` is private and Git-ignored; the generator refuses to write into the template directory.
+- `make deploy`: regenerate and apply that bundle to the current kubectl context.
+- `Dockerfile.index`: CGO index command plus Linux PDF/Word converters.
+- `Dockerfile.chat`: CGO chat command and embedded UI on a distroless runtime.
+- `.dockerignore`: allowlisted image build inputs; keep credentials, documents, databases, and local outputs out of the context.
 - `assets/images`: screenshots and other README assets.
 
 Keep the two explicit command entry points. Do not recreate a root `main.go`, bundled document directory, or public prebuilt-chunks input without a user request.
@@ -60,13 +66,21 @@ Keep the two explicit command entry points. Do not recreate a root `main.go`, bu
 
 ## Implementation and verification
 
-Use the Go version declared in `go.mod`. On Apple Silicon, use native ARM64 tools; executable overrides such as `GO=/opt/homebrew/bin/go` are supported by Make.
+Use `make test-manifests` for generator parsing, validation, and rollback checks without models, databases, or a cluster. `make test` also runs these tests.
+
+Use the Go version declared in `go.mod`. For native tests and binaries on Apple Silicon, use native ARM64 tools; executable overrides such as `GO=/opt/homebrew/bin/go` are supported by Make.
 
 ```sh
 make test
 make vet
-make build
+make build-binaries
 ```
+
+`make build` builds both application images; `make build-index` and `make build-chat` build them independently. All image build targets default to `PLATFORM=linux/amd64`; use `PLATFORM=linux/arm64` for ARM64 images. Keep image names configurable through `INDEX_IMAGE`/`CHAT_IMAGE`, the platform through `PLATFORM`, and retain `DOCKER`/`DOCKER_BUILD_FLAGS` overrides for the executable and additional build options. Both runtime images use UID/GID 65532 and a writable home for DuckDB extensions. The index image needs PDF/Word converters and temporary output; the chat image does not. Preserve loopback-only published-port examples and existing Host/Origin checks when changing container defaults.
+
+`make push` aggregates `push-index`/`push-chat`, retagging existing `INDEX_IMAGE`/`CHAT_IMAGE` sources as `REGISTRY/jar-index:IMAGE_TAG` and `REGISTRY/jar-chat:IMAGE_TAG` (defaults: `REGISTRY=ghcr.io/brito-rafa`, `IMAGE_TAG=latest`) without rebuilding or logging in.
+
+`make generate-manifests` uses Python 3 and configurable `KUSTOMIZE` to fill the public ConfigMap/Secret YAML placeholders and write the application bundle without applying resources; `NAMESPACE` selects its namespace. Keep filled secrets and the generated bundle private and ignored; validate combined Kustomize resources in memory. Stable ConfigMap/Secret names use Pod-template checksums for Deployment rollouts; Job-template immutability still applies. `make deploy` regenerates and applies to the current kubectl context without deleting Jobs, rebuilding, or pushing images. Preserve each absolute `DOCS` directory as a read-only `hostPath` of type `Directory` at the same path, without creating or checking those source directories on the generator host or provisioning storage; keep image/platform settings and Tailscale hostname/origin behavior synchronized with setup documentation.
 
 For relevant concurrency changes:
 

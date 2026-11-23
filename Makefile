@@ -1,15 +1,38 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
--include .env
+ENV_FILE ?= .env
+# Manifest targets parse the env file as literal data, including quotes/dollars.
+ifeq ($(strip $(MAKECMDGOALS)),)
+-include $(ENV_FILE)
+else ifneq ($(strip $(filter-out generate-manifests deploy,$(MAKECMDGOALS))),)
+-include $(ENV_FILE)
+endif
 GO ?= go
+DOCKER ?= docker
+INDEX_IMAGE ?= jar-index
+CHAT_IMAGE ?= jar-chat
+REGISTRY ?= ghcr.io/brito-rafa
+IMAGE_TAG ?= latest
+PLATFORM ?= linux/amd64
+DOCKER_BUILD_FLAGS ?=
+PYTHON ?= python3
+KUBECTL ?= kubectl
+KUSTOMIZE ?= $(KUBECTL) kustomize
+# Private, Git-ignored output; templates with placeholders live in config/manifests/kustomize.
+MANIFEST_DIR ?= config/manifests/generated
+NAMESPACE ?= jar
+K8S_INDEX_IMAGE ?=
+K8S_CHAT_IMAGE ?=
+INDEX_NODE_NAME ?=
+IMAGE_PULL_SECRET ?=
 DOCS ?=
 DB_URL ?=
 DB_TOKEN ?=
 DB_DISABLE_SSL ?= false
 CHAT_URL ?=
 EMBEDDING_URL ?=
-CHAT_MODEL ?=
+CHAT_API_MODEL ?=
 EMBEDDING_API_MODEL ?=
 # This canonical identity is stored in the index; it is separate from an API alias.
 EMBEDDING_MODEL ?= bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0
@@ -26,7 +49,8 @@ EMBEDDING_BATCH_SIZE ?= 8
 EMBEDDING_BUFFER_BATCHES ?= 16
 INSERT_BATCH_SIZE ?= 128
 
-export DOCS DB_URL DB_TOKEN DB_DISABLE_SSL CHAT_URL EMBEDDING_URL CHAT_MODEL EMBEDDING_API_MODEL
+export REGISTRY IMAGE_TAG PLATFORM NAMESPACE K8S_INDEX_IMAGE K8S_CHAT_IMAGE INDEX_NODE_NAME IMAGE_PULL_SECRET
+export DOCS DB_URL DB_TOKEN DB_DISABLE_SSL CHAT_URL EMBEDDING_URL CHAT_API_MODEL EMBEDDING_API_MODEL
 export EMBEDDING_MODEL DIMENSIONS CHAT_PORT CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL OPEN_BROWSER
 export FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE EMBEDDING_BUFFER_BATCHES INSERT_BATCH_SIZE
 
@@ -54,14 +78,14 @@ chat-web: ## Start browser chat (CHAT_PORT=18080)
 	@test -n "$$DB_URL" && test -n "$$DB_TOKEN" && test -n "$$CHAT_URL" && test -n "$$EMBEDDING_URL" || { echo 'ERROR: Set DB_URL, DB_TOKEN, CHAT_URL and EMBEDDING_URL in .env.' >&2; exit 2; }
 	@/bin/sh "$(CURDIR)/hack/check-connectivity.sh"
 	$(GO) run ./cmd/jar-chat -db-url "$$DB_URL" -chat-url "$$CHAT_URL" -embedding-url "$$EMBEDDING_URL" \
-		-chat-model "$$CHAT_MODEL" -embedding-api-model "$$EMBEDDING_API_MODEL" \
+		-chat-api-model "$$CHAT_API_MODEL" -embedding-api-model "$$EMBEDDING_API_MODEL" \
 		-web -host "$$CHAT_HOST" -allow-any-host="$$CHAT_ALLOW_ANY_HOST" -public-url "$$CHAT_PUBLIC_URL" -port "$$CHAT_PORT" -open-browser="$$OPEN_BROWSER"
 
 chat-terminal: ## Chat in the terminal with slash commands and Tab completion
 	@test -n "$$DB_URL" && test -n "$$DB_TOKEN" && test -n "$$CHAT_URL" && test -n "$$EMBEDDING_URL" || { echo 'ERROR: Set DB_URL, DB_TOKEN, CHAT_URL and EMBEDDING_URL in .env.' >&2; exit 2; }
 	@/bin/sh "$(CURDIR)/hack/check-connectivity.sh"
 	$(GO) run ./cmd/jar-chat -db-url "$$DB_URL" -chat-url "$$CHAT_URL" -embedding-url "$$EMBEDDING_URL" \
-		-chat-model "$$CHAT_MODEL" -embedding-api-model "$$EMBEDDING_API_MODEL"
+		-chat-api-model "$$CHAT_API_MODEL" -embedding-api-model "$$EMBEDDING_API_MODEL"
 
 run: chat ## Alias for chat (run make index first)
 
@@ -74,9 +98,45 @@ db-reset: ## ERASE connected JAR index tables; requires CONFIRM=erase
 	@test "$(CONFIRM)" = erase || { echo 'This erases the connected JAR index. Run: make db-reset CONFIRM=erase' >&2; exit 2; }
 	$(GO) run ./cmd/jar-index -db-url "$$DB_URL" -reset -confirm=erase
 
+##@ Container images
+.PHONY: build build-index build-chat
+build: build-index build-chat ## Build both container images
+
+build-index: ## Build the jar-index image with document converters
+	$(DOCKER) build --platform "$(PLATFORM)" $(DOCKER_BUILD_FLAGS) -f Dockerfile.index -t "$(INDEX_IMAGE)" .
+
+build-chat: ## Build the Distroless jar-chat image
+	$(DOCKER) build --platform "$(PLATFORM)" $(DOCKER_BUILD_FLAGS) -f Dockerfile.chat -t "$(CHAT_IMAGE)" .
+
+.PHONY: push push-index push-chat
+push: push-index push-chat ## Tag and push both existing images to REGISTRY
+
+push-index: ## Tag and push INDEX_IMAGE as REGISTRY/jar-index:IMAGE_TAG
+	$(DOCKER) tag "$(INDEX_IMAGE)" "$(patsubst %/,%,$(REGISTRY))/jar-index:$(IMAGE_TAG)"
+	$(DOCKER) push "$(patsubst %/,%,$(REGISTRY))/jar-index:$(IMAGE_TAG)"
+
+push-chat: ## Tag and push CHAT_IMAGE as REGISTRY/jar-chat:IMAGE_TAG
+	$(DOCKER) tag "$(CHAT_IMAGE)" "$(patsubst %/,%,$(REGISTRY))/jar-chat:$(IMAGE_TAG)"
+	$(DOCKER) push "$(patsubst %/,%,$(REGISTRY))/jar-chat:$(IMAGE_TAG)"
+
+##@ Kubernetes manifests
+# Forward explicit overrides only; Make defaults/file exports must not replace
+# the generator's correctly parsed .env values.
+MANIFEST_SETTINGS = DB_URL DB_TOKEN DB_DISABLE_SSL CHAT_URL EMBEDDING_URL CHAT_API_MODEL EMBEDDING_API_MODEL \
+	DOCS EMBEDDING_MODEL DIMENSIONS FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE \
+	EMBEDDING_BUFFER_BATCHES INSERT_BATCH_SIZE CHAT_PORT CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL \
+	REGISTRY IMAGE_TAG PLATFORM NAMESPACE K8S_INDEX_IMAGE K8S_CHAT_IMAGE INDEX_NODE_NAME IMAGE_PULL_SECRET
+MANIFEST_ENV_OVERRIDES = $(foreach setting,$(MANIFEST_SETTINGS),$(if $(filter environment command line,$(origin $(setting))),$(setting)))
+.PHONY: generate-manifests deploy
+generate-manifests: ## Fill config/manifests/kustomize templates from ENV_FILE into MANIFEST_DIR; validate offline
+	@$(PYTHON) "$(CURDIR)/hack/generate-manifests.py" --env-file "$(ENV_FILE)" --output-dir "$(MANIFEST_DIR)" --kustomize "$(KUSTOMIZE)" --env-overrides "$(strip $(MANIFEST_ENV_OVERRIDES))"
+
+deploy: generate-manifests ## Always regenerate MANIFEST_DIR first, then apply it to the current kubectl context
+	$(KUBECTL) apply -k "$(MANIFEST_DIR)"
+
 ##@ Development
-.PHONY: build cli-help test vet clean
-build: ## Build bin/jar-index and bin/jar-chat
+.PHONY: build-binaries cli-help test test-manifests vet clean
+build-binaries: ## Build native bin/jar-index and bin/jar-chat commands
 	mkdir -p bin
 	$(GO) build -o bin/jar-index ./cmd/jar-index
 	$(GO) build -o bin/jar-chat ./cmd/jar-chat
@@ -85,8 +145,11 @@ cli-help: ## Show index and chat command-line options
 	$(GO) run ./cmd/jar-index -help
 	$(GO) run ./cmd/jar-chat -help
 
-test: ## Run unit tests; integration tests remain opt-in
+test: test-manifests ## Run Go and manifest-generator tests; integration tests remain opt-in
 	$(GO) test ./...
+
+test-manifests: ## Test manifest generation without models, databases, or a cluster
+	@PYTHONDONTWRITEBYTECODE=1 $(PYTHON) "$(CURDIR)/hack/test-generate-manifests.py"
 
 vet: ## Run Go static analysis
 	$(GO) vet ./...
@@ -104,11 +167,22 @@ help: ## Display this help
 	  '  make chat-terminal' \
 	  '  make status' '' \
 	  'Services: DB_URL=quack:host:9494, DB_TOKEN, DB_DISABLE_SSL=false,' \
-	  '          CHAT_URL, EMBEDDING_URL, CHAT_MODEL, EMBEDDING_API_MODEL.' \
+	  '          CHAT_URL, EMBEDDING_URL, CHAT_API_MODEL, EMBEDDING_API_MODEL.' \
 	  'Empty API model IDs discover the sole advertised model.' \
 	  'Keep EMBEDDING_MODEL and DIMENSIONS consistent with the existing index.' \
 	  'Index tuning: FORCE_INDEX=false, DOCUMENT_WORKERS=20, EMBEDDING_WORKERS=1,' \
 	  '              EMBEDDING_BATCH_SIZE=8, EMBEDDING_BUFFER_BATCHES=16, INSERT_BATCH_SIZE=128.' \
 	  'Browser: CHAT_HOST=127.0.0.1, CHAT_PORT=18080, OPEN_BROWSER=true,' \
 	  '         CHAT_ALLOW_ANY_HOST=false, CHAT_PUBLIC_URL=.' \
+	  'Images: make build (both), make build-index, make build-chat.' \
+	  '        INDEX_IMAGE=jar-index, CHAT_IMAGE=jar-chat, DOCKER=docker.' \
+	  '        PLATFORM=linux/amd64 (override with linux/arm64), DOCKER_BUILD_FLAGS=.' \
+	  'Publish: make push (both), make push-index, make push-chat.' \
+	  '         REGISTRY=ghcr.io/brito-rafa, IMAGE_TAG=latest; authenticate with docker login first.' \
+	  'Manifests: make generate-manifests (reads ENV_FILE=.env; offline).' \
+	  '           make deploy regenerates and applies to the current kubectl context.' \
+	  '           Templates: config/manifests/kustomize (placeholders, committed).' \
+	  '           NAMESPACE=jar, MANIFEST_DIR=config/manifests/generated (private, Git-ignored).' \
+	  '           DOCS directories are read-only hostPath mounts on the selected node.' \
+	  'Native commands: make build-binaries.' \
 	  'Kronk inference and DuckDB Compose: https://github.com/brito-rafa/local-jar' ''

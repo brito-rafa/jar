@@ -1,46 +1,38 @@
 # JAR - Just Another RAG
 
-JAR is a multilingual retrieval-augmented generation (RAG) application that recursively indexes **PDF (`.pdf`), Word (`.doc` and `.docx`), and plain-text (`.txt`) files**. It extracts text on the client, stores searchable passages and embeddings in DuckDB, and answers questions using retrieved evidence with source references.
-
-**This repository runs inference through OpenAI-compatible HTTP endpoints.** Chat and embedding models run in services such as the included KServe deployment; JAR does not download or load models on the client. For local inference through Kronk and llama.cpp, including DuckDB Docker Compose setup, use the independent [local-jar repository](https://github.com/brito-rafa/local-jar). Both repositories retain the `cmd/jar-index`, `cmd/jar-chat`, and `pkg/` Go structure and compatible index formats.
-
-See [setup.md](setup.md) for requirements, Kubernetes examples, endpoint configuration, index compatibility, and application commands.
-
-## Quick start
-
-With Go, a C compiler, the [document converters](setup.md#requirements), and running model/database services, create an ignored `.env` from `.env.example` for a new checkout and set:
-
-```dotenv
-CHAT_URL=https://chat.example.com
-EMBEDDING_URL=https://embedding.example.com
-DB_URL=quack:duckdb.example.com:9494
-DB_TOKEN=<your-server-token>
-```
-
-These HTTP model APIs use `/v1/chat/completions`, `/v1/embeddings`, and model discovery through `/v1/models`. When an endpoint advertises several models, set `CHAT_MODEL` and/or `EMBEDDING_API_MODEL` to the desired API IDs. The current client does not send API-key authentication headers; use endpoints configured for this access model. See [model selection and index compatibility](setup.md#model-selection-and-index-compatibility).
-
-Run from the repository root:
-
-```sh
-make index DOCS="/absolute/path/to/your/documents"
-make chat-web
-```
-
-Replace `DOCS` with an existing document directory, or several directories separated by `;`. Wait for indexing to finish before starting chat. Browser chat opens at `http://127.0.0.1:18080`; use `make chat-terminal` for terminal chat. Later starts only need `make chat-web` to use the saved index. `make check-connectivity` checks configured services, and `make status` validates database access without modifying data.
-
-For plain HTTP DuckDB over a trusted encrypted network, set `DB_DISABLE_SSL=true`. The [Kubernetes setup](setup.md#kubernetes-setup) includes KServe and DuckDB deployment examples; Docker Compose is maintained in [local-jar](https://github.com/brito-rafa/local-jar).
-
-Existing installations should follow the [parameter migration](setup.md#parameter-migration) before running these commands. Credentials and database files are not moved automatically, and changing repositories alone does not require reindexing.
-
 ## Overview
+
+JAR is a multilingual retrieval-augmented generation (RAG) application that recursively indexes **PDF (`.pdf`), Word (`.doc` and `.docx`), and plain-text (`.txt`) files** and answers questions using retrieved evidence with source references.
+
+**JAR in this repository is intended to run as a cloud native application on Kubernetes.** A `jar-index` Job extracts documents and stores passages and embeddings in a separate DuckDB service. A `jar-chat` Deployment serves the browser interface, using OpenAI-compatible chat and embedding services such as KServe. Document converters are included in the index image; inference models run in their own services.
 
 Created by [brito-rafa](https://github.com/brito-rafa) with [OpenAI Codex](https://openai.com/codex/).
 
-Based on the [Kronk RAG example](https://github.com/ardanlabs/kronk/blob/main/examples/rag/main.go) by [Ardan Labs](https://github.com/ardanlabs/kronk). This application uses OpenAI-compatible model services and a separate DuckDB service accessed through Quack over TCP. Kronk runtime support is maintained in [local-jar](https://github.com/brito-rafa/local-jar).
+Based on the [Kronk RAG example](https://github.com/ardanlabs/kronk/blob/main/examples/rag/main.go) by [Ardan Labs](https://github.com/ardanlabs/kronk). For local inference through Kronk and llama.cpp, including DuckDB Docker Compose setup, use the independent [local-jar repository](https://github.com/brito-rafa/local-jar). Both repositories retain the `cmd/jar-index`, `cmd/jar-chat`, and `pkg/` Go structure and compatible index formats.
 
 ![JAR web interface showing the prompt, compact vector search, and a sourced answer](assets/images/web-interface.jpg)
 
 *Example interface using synthetic demonstration text, not private documents.*
+
+## Deploy on Kubernetes
+
+Everything runs in the `jar` namespace by default.
+
+1. **Set up DuckDB and KServe.** Follow [SETUP.md](SETUP.md#1-install-kubernetes-services) to deploy DuckDB, install KServe, and serve the chat and embedding models.
+
+2. **Create `.env`.** Copy the example, then set the database token, service URLs, and document paths as described in [SETUP.md](SETUP.md#2-create-and-configure-env):
+
+   ```sh
+   cp .env.example .env
+   ```
+
+3. **Deploy JAR.** From the repository root, with the intended kubectl context selected:
+
+   ```sh
+   make deploy
+   ```
+
+   This fills the templates in `config/manifests/kustomize/` from `.env`, writes them to the Git-ignored `config/manifests/generated/`, and applies them. See [SETUP.md](SETUP.md#3-deploy-jar) to follow indexing and open the chat.
 
 ## Import behavior
 
@@ -53,7 +45,7 @@ Based on the [Kronk RAG example](https://github.com/ardanlabs/kronk/blob/main/ex
 
 `-docs` is required for indexing; status, metadata maintenance, and reset do not read documents. Prepared `.chunks` files and the `CHUNKS` Make variable are no longer supported. Pass a directory containing DOC, DOCX, PDF, or TXT files; JAR creates retrieval passages internally.
 
-At startup, the indexer extracts the corpus and fingerprints its text and embedding configuration. Unchanged indexes are reused without re-embedding the corpus. Changed corpora replace the index in one transaction; the previous committed corpus stays intact if indexing fails. Indexing is **not resumable** in this version: an interrupted new corpus must be indexed again. Use one indexer at a time and finish indexing before starting a chat session, especially when changing the embedding model.
+During an intentional index update, the indexer extracts the corpus and fingerprints its text and embedding configuration. Unchanged indexes are reused without re-embedding the corpus. Changed corpora replace the index in one transaction; the previous committed corpus stays intact if indexing fails. Indexing is **not resumable** in this version: an interrupted new corpus must be indexed again. Use one indexer at a time and finish indexing before starting a chat session, especially when changing the embedding model.
 
 ## Chat behavior
 
@@ -90,8 +82,33 @@ Changing a search filter or language clears conversation history and saved refer
 
 Titles and dates are inferred from filenames, not verified bibliographic facts. For legacy conference codes, `580508RN.DOC` means `1958-05-08`, `320600CF.DOC` has month precision (`1932-06`), and `3100-1CF.DOC` has year precision (`1931`); these codes assume the 1900s. Unknown dates and abbreviations are not invented. Book filters ignore case and accents and apply before vector ranking.
 
-New indexes include this metadata. See [metadata maintenance](setup.md#metadata-maintenance) for existing indexes.
+New indexes include this metadata. See [metadata maintenance](SETUP.md#metadata-maintenance) for existing indexes.
 
 ## Attribution and license
 
 Adapted from Kronk's `examples/rag/main.go` and `examples/rag/duck` at revision `50ace045`. The standalone application adds configurable models, recursive document extraction, safe database insertion, separate index/chat commands, and containerized remote storage. Adapted code is distributed under Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+## Build and publish application images
+
+If you need your own images, build and publish them before deployment:
+
+```sh
+make build
+make push
+```
+
+Builds default to `PLATFORM=linux/amd64`; use `PLATFORM=linux/arm64` for ARM64 nodes. The default destinations are `ghcr.io/brito-rafa/jar-index:latest` and `ghcr.io/brito-rafa/jar-chat:latest`; override `REGISTRY` and `IMAGE_TAG` to publish under an account you control. Authenticate to the registry first. See [container images](SETUP.md#container-images) for individual image targets, runtime contents, and registry authentication. `make deploy` does not build or push images.
+
+## Troubleshooting and development
+
+Local application commands are troubleshooting and development tools. They require host Go, a C compiler, and access to the configured services; local indexing also needs document converters. Follow the final [troubleshooting and development procedures](SETUP.md#troubleshooting-and-development) for workstation endpoint settings, port forwarding, converter installation, direct CLI/container runs, and maintenance.
+
+```sh
+make check-connectivity
+make status
+make chat
+# Or use terminal chat:
+make chat-terminal
+```
+
+`make chat` runs the browser interface on your workstation; it does not deploy JAR. For intentional index updates, use the maintenance procedures in SETUP.md and run only one indexer at a time. Native commands and Docker runs are separate from the Kubernetes installation procedure.

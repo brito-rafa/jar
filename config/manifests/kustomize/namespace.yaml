@@ -1,0 +1,5 @@
+# Template: filled by `make generate-manifests`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
