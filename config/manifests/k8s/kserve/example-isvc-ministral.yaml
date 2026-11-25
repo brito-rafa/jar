@@ -1,5 +1,5 @@
 # Two models on two separate GPUs in the same cluster and namespace (jar in SETUP.md).
-# Ministral -> NVIDIA RTX 5060 Ti; Granite embeddings -> AMD RX 6600.
+# Ministral -> NVIDIA RTX 5060 Ti; embeddings -> AMD RX 6600.
 # Resource memory values are host RAM limits, not VRAM limits.
 # One replica per service avoids requesting a second exclusive GPU allocation.
 ---
@@ -12,6 +12,17 @@ metadata:
     serving.kserve.io/deploymentMode: Standard
 spec:
   predictor:
+    # The Tailscale operator (hack/k8s-setup/04-tailscale.sh) exposes the predictor Service on
+    # the tailnet as http://ministral. KServe copies these annotations only when it creates that
+    # Service; 02-kserve.sh carries them to an existing one. llama.cpp has no authentication,
+    # so every tailnet device your ACL allows can use the model. Remove both to stay cluster-only.
+    annotations:
+      tailscale.com/expose: "true"
+      tailscale.com/hostname: ministral
+    # This model needs the node's only GPU of its kind, so a rolling update would wait forever for a
+    # second one. Recreate stops the old pod first; the model is unavailable while the new one loads.
+    deploymentStrategy:
+      type: Recreate
     minReplicas: 1
     maxReplicas: 1
     model:
@@ -24,27 +35,3 @@ spec:
       resources:
         requests: {cpu: "2", memory: 4Gi}
         limits: {memory: 8Gi, nvidia.com/gpu: 1}
----
-# Embeddings: 768-dim vectors, 512-token max input; 4 slots x 512 tokens, and the
-# micro-batch covers a whole input because the model isn't causal.
-apiVersion: serving.kserve.io/v1beta1
-kind: InferenceService
-metadata:
-  name: granite-embedding
-  annotations:
-    serving.kserve.io/deploymentMode: Standard
-spec:
-  predictor:
-    minReplicas: 1
-    maxReplicas: 1
-    model:
-      modelFormat:
-        name: gguf
-      runtime: llamacpp-rocm
-      storageUri: hf-gguf://bartowski/granite-embedding-278m-multilingual-GGUF/granite-embedding-278m-multilingual-Q8_0.gguf
-      args: ["-m", "/mnt/models/granite-embedding-278m-multilingual-Q8_0.gguf",
-             "--alias", "granite-embedding", "--embeddings",
-             "-c", "2048", "-np", "4", "-b", "2048", "-ub", "2048"]
-      resources:
-        requests: {cpu: "1", memory: 512Mi}
-        limits: {memory: 1Gi, amd.com/gpu: 1}

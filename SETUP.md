@@ -10,7 +10,7 @@ Run commands from the repository root. Keep credentials and filled manifests pri
 
 You need a Kubernetes cluster and the intended current kubectl context, Helm, Make, and Python 3. Manifest validation uses `kubectl kustomize` by default; standalone Kustomize can be selected later. A working storage provisioner is required for DuckDB's PVC. Model nodes need suitable GPU drivers, device plugins, available GPU memory, and access to download runtime images and model files. The database needs extension-download access.
 
-The supplied model pair is a hardware-specific example: Ministral requests `nvidia.com/gpu: 1` with the CUDA runtime, while Granite requests `amd.com/gpu: 1` with ROCm. Review and adapt the runtime images, GPU resources, device mounts, and memory limits to your nodes before applying. The ROCm settings include a privileged RX 6600 compatibility configuration. Kubernetes must advertise the requested GPU resources; memory limits in these manifests describe host RAM rather than VRAM.
+The supplied model pair is a hardware-specific example: Ministral requests `nvidia.com/gpu: 1` with the CUDA runtime, while Qwen3-Embedding-8B requests `amd.com/gpu: 1` with ROCm. Review and adapt the runtime images, GPU resources, device mounts, and memory limits to your nodes before applying. The ROCm settings include a privileged RX 6600 compatibility configuration. Kubernetes must advertise the requested GPU resources; memory limits in these manifests describe host RAM rather than VRAM.
 
 For the default `jarchat` browser exposure, a Tailscale Kubernetes operator must handle the Service annotations; `hack/k8s-setup/04-tailscale.sh` installs one (the Tailscale tags and OAuth client it needs are listed at the top of that script). The application nodes also need access to the JAR images you will configure in `.env`. Default image names are references, not a guarantee that packages exist or are publicly accessible; use pullable published images or follow the optional [image release procedure](#container-images).
 
@@ -40,31 +40,21 @@ Preserve this private file and its existing token on later runs. Configure the s
 
 `hack/k8s-setup/03-duckdb.sh` is a shortcut that applies the same example to `jar` with a fresh token and prints that token; it does not keep a private copy, so prefer the procedure above.
 
-### Install KServe
+### Install KServe and the models
 
-For a fresh cluster, review and run the supplied controller installation:
+Review the GPU resources, runtime images, and memory limits in [`config/manifests/k8s/kserve`](config/manifests/k8s/kserve/) for your nodes, then run:
 
 ```bash
 bash hack/k8s-setup/02-kserve.sh
 ```
 
-The script installs cert-manager `v1.21.3` and KServe CRDs/resources `v0.20.0` into their own namespaces. Its cert-manager command assumes a fresh installation; adapt it if these controllers already exist. It uses the current kubectl context. GPU drivers/device plugins and the Tailscale operator are separate prerequisites.
+The script installs cert-manager `v1.21.3` and KServe CRDs/resources `v0.20.0` (no Istio) into their own namespaces, applies the cluster runtime/downloader definitions, then creates both InferenceServices in `jar` and waits up to 30 minutes for each while the GGUF files download. `NAMESPACE` selects another namespace and `MODEL_TIMEOUT` changes the wait. It uses the current kubectl context and is re-runnable; adapt it if cert-manager or KServe is already installed another way. GPU drivers/device plugins and the Tailscale operator are separate prerequisites; the script warns when no node advertises `nvidia.com/gpu` or `amd.com/gpu`, because the model requesting it would stay Pending.
 
-### Deploy the chat and embedding models
+The [cluster definitions](config/manifests/k8s/kserve/example-cluster-serving-runtimes-cuda-and-rocm.yaml) provide `hf-gguf`, `llamacpp-cuda`, and `llamacpp-rocm`. [`example-isvc-ministral.yaml`](config/manifests/k8s/kserve/example-isvc-ministral.yaml) serves Ministral 3 8B Instruct Q4_K_M as `ministral-3-8b` on CUDA. [`example-isvc-qwen3-8B-embedding.yaml`](config/manifests/k8s/kserve/example-isvc-qwen3-8B-embedding.yaml) serves Qwen3-Embedding-8B Q4_K_M as `qwen3-embedding-8b` on ROCm, with last-token pooling, a 2,048-token context per input, and 4,096-dimensional vectors. Models download during startup; gated repositories can use an optional `hf-secret` with `HF_TOKEN` in the model namespace.
 
-After adapting the GPU configuration, apply the cluster runtime/downloader definitions before the InferenceServices:
+The predictor Services are `ministral-3-8b-predictor:80` and `qwen3-embedding-8b-predictor:80` in `jar`. Wait for both models and DuckDB to be ready before deploying JAR. Application Pods must reach these Services through cluster networking; use their namespace-qualified DNS names in `.env`. A laptop's localhost port-forward is for troubleshooting and is not a Pod endpoint.
 
-```bash
-kubectl apply -f config/manifests/k8s/kserve/example-cluster-serving-runtimes-cuda-and-rocm.yaml
-kubectl -n jar apply -f config/manifests/k8s/kserve/example-isvc-ministral-granite.yaml
-kubectl -n jar wait --for=condition=Ready inferenceservice/ministral-3-8b --timeout=30m
-kubectl -n jar wait --for=condition=Ready inferenceservice/granite-embedding --timeout=30m
-kubectl -n jar get inferenceservices,services
-```
-
-The [cluster definitions](config/manifests/k8s/kserve/example-cluster-serving-runtimes-cuda-and-rocm.yaml) provide `hf-gguf`, `llamacpp-cuda`, and `llamacpp-rocm`. The [model definitions](config/manifests/k8s/kserve/example-isvc-ministral-granite.yaml) serve Ministral 3 8B Instruct Q4_K_M as `ministral-3-8b` and Granite Embedding 278M Multilingual Q8_0 as `granite-embedding`. Models download during startup; gated repositories can use an optional `hf-secret` with `HF_TOKEN` in the model namespace.
-
-The predictor Services are `ministral-3-8b-predictor:80` and `granite-embedding-predictor:80` in `jar`. Wait for both models and DuckDB to be ready before deploying JAR. Application Pods must reach these Services through cluster networking; use their namespace-qualified DNS names in `.env`. A laptop's localhost port-forward is for troubleshooting and is not a Pod endpoint.
+Both InferenceServices also set `tailscale.com/expose` and `tailscale.com/hostname` under `spec.predictor.annotations`; KServe copies them to the predictor Service, so once the [Tailscale operator](hack/k8s-setup/04-tailscale.sh) runs, the models are on your tailnet as `http://ministral` and `http://qwen`. KServe v0.20 adds these annotations only when it creates a Service, so `02-kserve.sh` copies them onto predictor Services that already exist. Changing predictor annotations also changes the pod template, so each model restarts once; both predictors use the `Recreate` strategy because a rolling update would wait for a second GPU. llama.cpp has no authentication: restrict these devices with your tailnet ACLs, or delete the annotations (and remove them from the Service with `kubectl annotate`) to keep the models cluster-only. JAR Pods keep using the cluster DNS names.
 
 ## 2. Create and configure .env
 
@@ -83,11 +73,11 @@ DB_URL=quack:duckdb.jar.svc.cluster.local:9494
 DB_TOKEN=<same-token-as-the-private-duckdb-manifest>
 DB_DISABLE_SSL=true
 CHAT_URL=http://ministral-3-8b-predictor.jar.svc.cluster.local
-EMBEDDING_URL=http://granite-embedding-predictor.jar.svc.cluster.local
+EMBEDDING_URL=http://qwen3-embedding-8b-predictor.jar.svc.cluster.local
 CHAT_API_MODEL=ministral-3-8b
-EMBEDDING_API_MODEL=granite-embedding
-EMBEDDING_MODEL=bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0
-DIMENSIONS=768
+EMBEDDING_API_MODEL=qwen3-embedding-8b
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B-GGUF:Q4_K_M
+DIMENSIONS=4096
 DOCS=/srv/jar/books;/srv/jar/conferences
 INDEX_NODE_NAME=documents-node
 REGISTRY=ghcr.io/brito-rafa
@@ -152,7 +142,7 @@ To try `jar-mcp` without kagent, run `kubectl -n jar port-forward svc/jar-mcp 18
 
 `CHAT_API_MODEL` and `EMBEDDING_API_MODEL` are the API model IDs. If empty, each endpoint must advertise exactly one model through `/v1/models`; shared multi-model endpoints need explicit IDs. JAR calls `/v1/chat/completions` and `/v1/embeddings` and accepts URLs with or without `/v1`. Bare model host/port values use HTTP. The current client does not send API-key authentication headers; configure the services for that access model.
 
-`EMBEDDING_MODEL` is the separate canonical identity stored in index metadata and the corpus fingerprint. The existing default is `bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0` with `DIMENSIONS=768`; it describes Granite's weights/configuration rather than downloading or choosing a server model. The remote API alias can remain `granite-embedding`.
+`EMBEDDING_MODEL` is the separate canonical identity stored in index metadata and the corpus fingerprint. The default is `Qwen/Qwen3-Embedding-8B-GGUF:Q4_K_M` with `DIMENSIONS=4096`, matching the KServe example; it describes the Qwen3-Embedding-8B weights and quantization rather than downloading or choosing a server model, and the remote API alias is separately `qwen3-embedding-8b`. Indexes built with the earlier default, `bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0` with `DIMENSIONS=768`, are reused only by setting those two values explicitly and serving the same Granite weights; otherwise reindex.
 
 To reuse an index, retain the same embedding weights, preprocessing, vector dimensions, canonical identity, and source labels. JAR checks vector sizes but cannot establish that an API alias serves identical weights. Changing the embedding model requires intentional reindexing; matching dimensions alone is insufficient. The split into `jar`/`local-jar` preserves schema and fingerprint compatibility. Chat reads the stored identity from metadata.
 
@@ -196,12 +186,6 @@ make deploy
 ```
 
 Foreground deletion waits for the old Pod to stop before a replacement starts. Use your configured namespace. The recreated Job still skips if any chunks exist; changing `DOCS` or `FORCE_INDEX` does not bypass the guard. Intentional index replacement uses the indexer without `-skip-if-populated`, or the explicit [reset workflow](#reset-the-connected-index), both described at the end of this guide. No automatic reset is performed.
-
-### Alternative models and optional gateway
-
-[The Qwen embedding example](config/manifests/k8s/kserve/example-isvc-serving-runtime-qwen-8B-embedding.yaml) supplies a namespace-scoped ROCm runtime and `qwen3-embedding-8b` service in `jar`, using the same `hf-gguf` downloader. It is a replacement path for the AMD GPU used by Granite: plan the switch without requesting the same exclusive GPU for both. It uses last-token pooling, 4096 output dimensions, and a different model identity. Configure its predictor URL/API ID and matching canonical identity/dimensions, then deliberately rebuild the index; the bootstrap Job will still skip an existing corpus.
-
-[The AI Gateway example](config/manifests/k8s/ai-gateway/example-ai-gateway.yaml) optionally routes both Ministral and Granite by model ID in `jar`. `hack/k8s-setup/05-aigateway.sh` installs its prerequisites with Helm and applies it. Once deployed, use the gateway's Pod-reachable Service URL for both model endpoints and retain the explicit API model IDs. Direct predictor Services are sufficient for the primary flow.
 
 ## Container images
 
@@ -293,13 +277,13 @@ For client-side debugging of the infrastructure examples, keep these forwards in
 
 ```bash
 kubectl -n jar port-forward svc/ministral-3-8b-predictor 8080:80
-kubectl -n jar port-forward svc/granite-embedding-predictor 8081:80
+kubectl -n jar port-forward svc/qwen3-embedding-8b-predictor 8081:80
 kubectl -n jar port-forward svc/duckdb 9494:9494
 ```
 
-A native client can then use `CHAT_URL=http://127.0.0.1:8080`, `EMBEDDING_URL=http://127.0.0.1:8081`, and `DB_URL=quack:127.0.0.1:9494` with the existing database token and `DB_DISABLE_SSL=true`. These localhost addresses apply to that client, not to JAR Pods. To debug only the application browser Service, use `kubectl -n jar port-forward svc/jarchat 18080:80` and browse `http://127.0.0.1:18080`; local Host/Origin checks remain enabled. For the MCP Service, use `kubectl -n jar port-forward svc/jar-mcp 18090:80` and connect an MCP client to `http://127.0.0.1:18090/mcp`.
+A native client can then use `CHAT_URL=http://127.0.0.1:8080`, `EMBEDDING_URL=http://127.0.0.1:8081`, and `DB_URL=quack:127.0.0.1:9494` with the existing database token and `DB_DISABLE_SSL=true`. These localhost addresses apply to that client, not to JAR Pods. To debug only the application browser Service, use `kubectl -n jar port-forward svc/jarchat 18080:80` and browse `http://127.0.0.1:18080`; local Host/Origin checks remain enabled. For the MCP Service, use `kubectl -n jar port-forward svc/jar-mcp 18090:80` and connect an MCP client to `http://127.0.0.1:18090/mcp`. On the tailnet, a native client can use `CHAT_URL=http://ministral` and `EMBEDDING_URL=http://qwen` instead of the model port-forwards.
 
-`hack/k8s-setup/04-portforward.sh` requires Tailscale and additionally binds infrastructure forwards to the host's Tailscale IPv4 address and forwards DuckDB UI port `4213`. Use it only for the intended host exposure. `01-minikube-start.sh` is a separate Linux AMD lab helper (profile `kserve`, 10 CPUs/32 GiB by default); it passes AMD devices, turns on the `certificates.k8s.io/v1beta1` PodCertificateRequest API that `05-kagent.sh` needs (and warns if an existing profile still lacks it), and does not supply the NVIDIA GPU required by the unmodified chat example. Select the intended kubectl context before running other scripts.
+`01-minikube-start.sh` is a separate Linux AMD lab helper (profile `kserve`, 10 CPUs/32 GiB by default); it passes the AMD and NVIDIA GPUs into the node (`--gpus amd --gpus nvidia.com`), turns on the `certificates.k8s.io/v1beta1` PodCertificateRequest API that `05-kagent.sh` needs (and warns if an existing profile still lacks it). Select the intended kubectl context before running other scripts.
 
 ```bash
 make check-connectivity
@@ -336,16 +320,16 @@ export DB_TOKEN='<your-server-token>'
 go run ./cmd/jar-index -docs "/path/to/documents" \
   -db-url quack:duckdb.example.com:9494 \
   -embedding-url https://embedding.example.com \
-  -embedding-api-model granite-embedding
+  -embedding-api-model qwen3-embedding-8b
 
 go run ./cmd/jar-chat -db-url quack:duckdb.example.com:9494 \
   -chat-url https://chat.example.com -chat-api-model ministral-3-8b \
   -embedding-url https://embedding.example.com \
-  -embedding-api-model granite-embedding
+  -embedding-api-model qwen3-embedding-8b
 
 go run ./cmd/jar-mcp -db-url quack:duckdb.example.com:9494 \
   -embedding-url https://embedding.example.com \
-  -embedding-api-model granite-embedding -port 18090
+  -embedding-api-model qwen3-embedding-8b -port 18090
 ```
 
 `make build-binaries` creates native `bin/jar-index`, `bin/jar-chat`, and `bin/jar-mcp`. Use `make cli-help` or any command's `-help` for all flags. `jar-mcp` listens on `127.0.0.1` unless `-host` says otherwise and has no authentication. `-skip-if-populated` is optional for direct indexing and wins over `-force` when a chunk exists.
@@ -382,8 +366,8 @@ Configure a Docker-compatible environment file with the database/model settings 
 docker run --rm --env-file .env \
   -v "/absolute/path/to/your/documents:/documents:ro" \
   jar-index -docs /documents \
-  -embedding-model "bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0" \
-  -dimensions 768
+  -embedding-model "Qwen/Qwen3-Embedding-8B-GGUF:Q4_K_M" \
+  -dimensions 4096
 ```
 
 The mounted directory and files must be readable by UID `65532`; extraction writes only to temporary container storage. For multiple roots, mount each directory read-only and pass their container paths as a quoted semicolon list, such as `-docs "/books;/conferences"`.

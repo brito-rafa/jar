@@ -1,0 +1,61 @@
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen3-embedding-8b
+  namespace: jar
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+spec:
+  predictor:
+    # The Tailscale operator (hack/k8s-setup/04-tailscale.sh) exposes the predictor Service on
+    # the tailnet as http://qwen. KServe copies these annotations only when it creates that
+    # Service; 02-kserve.sh carries them to an existing one. llama.cpp has no authentication,
+    # so every tailnet device your ACL allows can use the model. Remove both to stay cluster-only.
+    annotations:
+      tailscale.com/expose: "true"
+      tailscale.com/hostname: qwen
+    # This model needs the node's only GPU of its kind, so a rolling update would wait forever for a
+    # second one. Recreate stops the old pod first; the model is unavailable while the new one loads.
+    deploymentStrategy:
+      type: Recreate
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: gguf
+      runtime: llamacpp-rocm
+      storageUri: hf-gguf://Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q4_K_M.gguf
+      # Model supports 32K; intentionally serve 2K per input to bound memory use.
+      # One slot avoids dividing the configured context among parallel slots.
+      # Last-token pooling is required for this model; default output is 4096 dimensions.
+      args:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /mnt/models/Qwen3-Embedding-8B-Q4_K_M.gguf
+      - --alias
+      - qwen3-embedding-8b
+      - -ngl
+      - "99"
+      - --embeddings
+      - --pooling
+      - last
+      - -c
+      - "2048"
+      - -np
+      - "1"
+      - -b
+      - "2048"
+      - -ub
+      - "2048"
+      resources:
+        requests:
+          cpu: "2"
+          memory: 6Gi
+        # Host RAM, not VRAM. Actual GPU memory use must be checked on the card.
+        limits:
+          memory: 12Gi
+          amd.com/gpu: 1

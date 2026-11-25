@@ -1,5 +1,5 @@
 # Cluster-scoped resources: one single-file GGUF downloader and two runtimes.
-# Apply before 02-inference-services.yaml.
+# Apply before the example-isvc-*.yaml InferenceServices (hack/k8s-setup/02-kserve.sh does both).
 # Select runtimes explicitly; CUDA uses NVIDIA, ROCm uses AMD.
 # Images retain upstream moving tags from the original; pin tested digests for reproducibility.
 ---

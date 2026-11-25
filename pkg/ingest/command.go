@@ -30,7 +30,7 @@ func run(args []string, openDB func(connection.Flags) (*sql.DB, error)) error {
 	embedding := f.String("embedding-model", inference.DefaultEmbedding, "Canonical embedding identity stored in the index; preserve to reuse existing indexes")
 	embeddingURL := f.String("embedding-url", os.Getenv("EMBEDDING_URL"), "OpenAI-compatible embedding endpoint (required for indexing)")
 	embeddingAPIModel := f.String("embedding-api-model", os.Getenv("EMBEDDING_API_MODEL"), "Embedding API model ID; must serve embedding-model")
-	dimensions := f.Int("dimensions", 768, "Values per embedding vector; must match the model output (Granite 278M: 768)")
+	dimensions := f.Int("dimensions", inference.DefaultDimensions, "Values per embedding vector; must match the model output (Qwen3-Embedding-8B: 4096)")
 	documentWorkers := f.Int("document-workers", 20, "Concurrent document converters (1-64)")
 	embeddingWorkers := f.Int("embedding-workers", 1, "Concurrent embedding request workers (1-8)")
 	embeddingBatch := f.Int("embedding-batch-size", 8, "Texts per embedding request (1-128)")

@@ -37,7 +37,7 @@ EMBEDDING_URL ?=
 CHAT_API_MODEL ?=
 EMBEDDING_API_MODEL ?=
 # This canonical identity is stored in the index; it is separate from an API alias.
-EMBEDDING_MODEL ?= bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0
+EMBEDDING_MODEL ?= Qwen/Qwen3-Embedding-8B-GGUF:Q4_K_M
 DIMENSIONS ?= 4096
 CHAT_PORT ?= 18080
 CHAT_HOST ?= 127.0.0.1
