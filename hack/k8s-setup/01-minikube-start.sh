@@ -13,7 +13,7 @@ k() { kubectl --context "$PROFILE" "$@"; }
 [[ -e /dev/nvidia0 ]] || { echo "/dev/nvidia0 not found: is the nvidia driver loaded?" >&2; exit 1; }
 
 # The docker driver is the only one minikube supports for AMD GPUs (minikube v1.35+).
-# Agent Substrate (04-kagent.sh) needs the beta PodCertificateRequest API: its feature gate plus the
+# Agent Substrate (05-kagent.sh) needs the beta PodCertificateRequest API: its feature gate plus the
 # certificates.k8s.io/v1beta1 resource, which Kubernetes does not serve by default.
 minikube start -p "$PROFILE" --driver docker --container-runtime docker --gpus amd --gpus nvidia.com \
   --cpus "$CPUS" --memory "$MEMORY" \
@@ -30,7 +30,7 @@ minikube status -p "$PROFILE"
 if k get --raw /apis/certificates.k8s.io/v1beta1 2>/dev/null | grep -q '"podcertificaterequests"'; then
   echo "certificates.k8s.io/v1beta1 PodCertificateRequest: served"
 else
-  echo "WARNING: certificates.k8s.io/v1beta1 PodCertificateRequest is not served; 04-kagent.sh will stop." >&2
+  echo "WARNING: certificates.k8s.io/v1beta1 PodCertificateRequest is not served; 05-kagent.sh will stop." >&2
   echo "         If this profile existed before, recreate it: minikube delete -p $PROFILE, then rerun." >&2
 fi
 

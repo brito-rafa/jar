@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 04-kagent.sh — kagent 1.0 and Agent Substrate, with PostgreSQL as a Deployment in the kagent
+# 05-kagent.sh — kagent 1.0 and Agent Substrate, with PostgreSQL as a Deployment in the kagent
 # namespace (config/manifests/k8s/kagent/example-postgres.yaml) instead of an external database.
 #
 # Follows "Install with Helm" in https://kagent.dev/docs/kagent/latest/setup/installation.

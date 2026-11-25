@@ -12,7 +12,7 @@ You need a Kubernetes cluster and the intended current kubectl context, Helm, Ma
 
 The supplied model pair is a hardware-specific example: Ministral requests `nvidia.com/gpu: 1` with the CUDA runtime, while Granite requests `amd.com/gpu: 1` with ROCm. Review and adapt the runtime images, GPU resources, device mounts, and memory limits to your nodes before applying. The ROCm settings include a privileged RX 6600 compatibility configuration. Kubernetes must advertise the requested GPU resources; memory limits in these manifests describe host RAM rather than VRAM.
 
-For the default `jarchat` browser exposure, an existing Tailscale Kubernetes operator must handle the Service annotations. The application nodes also need access to the JAR images you will configure in `.env`. Default image names are references, not a guarantee that packages exist or are publicly accessible; use pullable published images or follow the optional [image release procedure](#container-images).
+For the default `jarchat` browser exposure, a Tailscale Kubernetes operator must handle the Service annotations; `hack/k8s-setup/04-tailscale.sh` installs one (the Tailscale tags and OAuth client it needs are listed at the top of that script). The application nodes also need access to the JAR images you will configure in `.env`. Default image names are references, not a guarantee that packages exist or are publicly accessible; use pullable published images or follow the optional [image release procedure](#container-images).
 
 ### Deploy DuckDB
 
@@ -127,10 +127,10 @@ Deployment does not build/push images or automatically delete/recreate an existi
 
 The kagent `librarian` agent reaches it over that Service. Its `RemoteMCPServer` names the URL, and its `AgentTemplate` binds that server and a `ModelConfig` for Ministral. The agent runs on an Agent Substrate Worker, and every outbound call leaves through the Substrate egress gateway in `ate-system`, which allows the bound MCP server and model URLs without a separate EgressPolicy. If you add NetworkPolicies to `jar`, admit `ate-system` to `jar-mcp` and `ministral-3-8b-predictor`.
 
-kagent 1.0 needs Kubernetes 1.37 or later, Helm, `jq`, `openssl`, and `curl`. If the [`kubectl-ate` plugin](https://github.com/kagent-dev/substrate/releases) is missing, `hack/k8s-setup/04-kagent.sh` installs the build that matches its `SUBSTRATE_VERSION` into `~/.local/bin` after checking its published SHA-256 (`KUBECTL_ATE_DIR` picks another folder; `INSTALL_KUBECTL_ATE=false` only checks). Add that folder to your `PATH` to run `kubectl ate` yourself. Then create the agent:
+kagent 1.0 needs Kubernetes 1.37 or later, Helm, `jq`, `openssl`, and `curl`. If the [`kubectl-ate` plugin](https://github.com/kagent-dev/substrate/releases) is missing, `hack/k8s-setup/05-kagent.sh` installs the build that matches its `SUBSTRATE_VERSION` into `~/.local/bin` after checking its published SHA-256 (`KUBECTL_ATE_DIR` picks another folder; `INSTALL_KUBECTL_ATE=false` only checks). Add that folder to your `PATH` to run `kubectl ate` yourself. Then create the agent:
 
 ```bash
-bash hack/k8s-setup/06-kagent.sh
+bash hack/k8s-setup/05-kagent.sh
 kubectl -n kagent apply -f config/manifests/k8s/kagent/example-librarian.yaml
 kubectl -n kagent get agents,remotemcpservers
 kubectl -n kagent port-forward svc/kagent-ui 8082:8080
@@ -299,7 +299,7 @@ kubectl -n jar port-forward svc/duckdb 9494:9494
 
 A native client can then use `CHAT_URL=http://127.0.0.1:8080`, `EMBEDDING_URL=http://127.0.0.1:8081`, and `DB_URL=quack:127.0.0.1:9494` with the existing database token and `DB_DISABLE_SSL=true`. These localhost addresses apply to that client, not to JAR Pods. To debug only the application browser Service, use `kubectl -n jar port-forward svc/jarchat 18080:80` and browse `http://127.0.0.1:18080`; local Host/Origin checks remain enabled. For the MCP Service, use `kubectl -n jar port-forward svc/jar-mcp 18090:80` and connect an MCP client to `http://127.0.0.1:18090/mcp`.
 
-`hack/k8s-setup/04-portforward.sh` requires Tailscale and additionally binds infrastructure forwards to the host's Tailscale IPv4 address and forwards DuckDB UI port `4213`. Use it only for the intended host exposure. `01-minikube-start.sh` is a separate Linux AMD lab helper (profile `kserve`, 10 CPUs/32 GiB by default); it passes AMD devices, turns on the `certificates.k8s.io/v1beta1` PodCertificateRequest API that `04-kagent.sh` needs (and warns if an existing profile still lacks it), and does not supply the NVIDIA GPU required by the unmodified chat example. Select the intended kubectl context before running other scripts.
+`hack/k8s-setup/04-portforward.sh` requires Tailscale and additionally binds infrastructure forwards to the host's Tailscale IPv4 address and forwards DuckDB UI port `4213`. Use it only for the intended host exposure. `01-minikube-start.sh` is a separate Linux AMD lab helper (profile `kserve`, 10 CPUs/32 GiB by default); it passes AMD devices, turns on the `certificates.k8s.io/v1beta1` PodCertificateRequest API that `05-kagent.sh` needs (and warns if an existing profile still lacks it), and does not supply the NVIDIA GPU required by the unmodified chat example. Select the intended kubectl context before running other scripts.
 
 ```bash
 make check-connectivity
