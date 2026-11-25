@@ -1,6 +1,6 @@
 # JAR setup
 
-Deploy DuckDB and the KServe chat/embedding services first, configure `.env`, then run `make deploy` to install JAR's indexing Job and chat Deployment. JAR uses OpenAI-compatible HTTP model APIs and a separate DuckDB service; its application images contain no inference models or database server.
+Deploy DuckDB and the KServe chat/embedding services first, configure `.env`, then run `make deploy` to install JAR's indexing Job, chat Deployment, and read-only MCP Deployment. JAR uses OpenAI-compatible HTTP model APIs and a separate DuckDB service; its application images contain no inference models or database server.
 
 Run commands from the repository root. Keep credentials and filled manifests private and Git-ignored. For Kronk/llama.cpp inference and DuckDB Compose, use [local-jar](https://github.com/brito-rafa/local-jar). Native commands and direct container runs are collected under [Troubleshooting and development](#troubleshooting-and-development).
 
@@ -100,7 +100,7 @@ Replace the token, node, document paths, and image references with your settings
 
 Each absolute directory in `DOCS` becomes a read-only `hostPath` of type `Directory` mounted at exactly the same path inside the indexing Pod. Those directories must already exist on the indexing node and be readable by UID `65532`. `INDEX_NODE_NAME` pins the Job to that node; otherwise every eligible indexing node needs the paths. The generator checks path syntax without checking this machine's filesystem, copying documents, creating node directories, or provisioning a PVC. Kubernetes must mount the directories before the process can start, including when indexing will later be skipped.
 
-Select application images the cluster can pull. By default, generated references are `REGISTRY/jar-index:IMAGE_TAG` and `REGISTRY/jar-chat:IMAGE_TAG`; `K8S_INDEX_IMAGE` and `K8S_CHAT_IMAGE` override them individually. If a registry requires authentication, set `IMAGE_PULL_SECRET` to an existing pull Secret in `NAMESPACE`. The generated Pods select Linux and the architecture in `PLATFORM`, default `linux/amd64`; match it to both the images and nodes.
+Select application images the cluster can pull. By default, generated references are `REGISTRY/jar-index:IMAGE_TAG`, `REGISTRY/jar-chat:IMAGE_TAG`, and `REGISTRY/jar-mcp:IMAGE_TAG`; `K8S_INDEX_IMAGE`, `K8S_CHAT_IMAGE`, and `K8S_MCP_IMAGE` override them individually. If a registry requires authentication, set `IMAGE_PULL_SECRET` to an existing pull Secret in `NAMESPACE`. The generated Pods select Linux and the architecture in `PLATFORM`, default `linux/amd64`; match it to both the images and nodes.
 
 For the short Tailscale hostname, use `CHAT_PUBLIC_URL=http://jarchat` (also the generator's default when empty). If your browser uses the full MagicDNS hostname or a TLS proxy, set that exact origin, for example `http://jarchat.your-tailnet.ts.net` or your proxy's HTTPS origin. Keep `CHAT_ALLOW_ANY_HOST=false` to retain the default Host/Origin policy.
 
@@ -112,13 +112,39 @@ With services ready, document paths present on the selected node, and applicatio
 make deploy
 kubectl -n jar wait --for=condition=complete job/jar-index --timeout=1h
 kubectl -n jar rollout status deployment/jar-chat
+kubectl -n jar rollout status deployment/jar-mcp
 ```
 
-`make deploy` fills and validates the manifests, then runs `kubectl apply -k` against the current context. Replace `jar` in follow-up commands when using another `NAMESPACE`. It creates the indexing Job and chat Deployment together; on an empty database, chat can restart until indexing finishes. Open `http://jarchat` through Tailscale, or the exact origin configured in `CHAT_PUBLIC_URL`, once chat is ready.
+`make deploy` fills and validates the manifests, then runs `kubectl apply -k` against the current context. Replace `jar` in follow-up commands when using another `NAMESPACE`. It creates the indexing Job and the chat and MCP Deployments together; on an empty database, `jar-chat` and `jar-mcp` can restart until indexing finishes. Open `http://jarchat` through Tailscale, or the exact origin configured in `CHAT_PUBLIC_URL`, once chat is ready.
 
 The generated `jar-index` Job is a bootstrap step. Its `-skip-if-populated` flag exits successfully when `items` contains any row, before document validation/extraction or model calls, even with `FORCE_INDEX=true` or missing ready-index metadata. An empty/missing `items` table follows normal indexing. A successful skip checks chunk existence rather than index readiness or embedding compatibility. This flag requires a current `jar-index` image containing the feature.
 
 Deployment does not build/push images or automatically delete/recreate an existing Job. For updates, see [Regenerate and recreate the indexing Job](#regenerate-and-recreate-the-indexing-job).
+
+## 4. Optional: research agent with kagent
+
+`make deploy` also runs `jar-mcp`, which offers the existing index to agents as read-only [Model Context Protocol](https://modelcontextprotocol.io) tools: `index_status`, `search_passages`, `list_sources`, `get_passage_context`, and `get_conference_text`. It embeds search queries with the configured embedding service and reads DuckDB. It never indexes, rebuilds metadata, resets tables, or calls the chat model. The `jar-mcp` Service is cluster-internal (ClusterIP, port `80` to `MCP_PORT`, no Tailscale annotations) and unauthenticated: any Pod that reaches `http://jar-mcp.jar.svc.cluster.local/mcp` can read indexed text.
+
+The kagent `librarian` agent reaches it over that Service. Its `RemoteMCPServer` names the URL, and its `AgentTemplate` binds that server and a `ModelConfig` for Ministral. The agent runs on an Agent Substrate Worker, and every outbound call leaves through the Substrate egress gateway in `ate-system`, which allows the bound MCP server and model URLs without a separate EgressPolicy. If you add NetworkPolicies to `jar`, admit `ate-system` to `jar-mcp` and `ministral-3-8b-predictor`.
+
+kagent 1.0 needs Kubernetes 1.37 or later, Helm, `jq`, `openssl`, and `curl`. If the [`kubectl-ate` plugin](https://github.com/kagent-dev/substrate/releases) is missing, `hack/k8s-setup/04-kagent.sh` installs the build that matches its `SUBSTRATE_VERSION` into `~/.local/bin` after checking its published SHA-256 (`KUBECTL_ATE_DIR` picks another folder; `INSTALL_KUBECTL_ATE=false` only checks). Add that folder to your `PATH` to run `kubectl ate` yourself. Then create the agent:
+
+```bash
+bash hack/k8s-setup/06-kagent.sh
+kubectl -n kagent apply -f config/manifests/k8s/kagent/example-librarian.yaml
+kubectl -n kagent get agents,remotemcpservers
+kubectl -n kagent port-forward svc/kagent-ui 8082:8080
+```
+
+Open `http://localhost:8082` and choose `librarian`; the UI shows each tool call.
+
+The script follows kagent's Helm installation, except that PostgreSQL runs in the `kagent` namespace from [example-postgres.yaml](config/manifests/k8s/kagent/example-postgres.yaml): one Deployment, a 5 GiB PVC, and a NetworkPolicy that admits only `kagent` and `ate-system`. The script generates the superuser and login passwords into Secrets (`kagent-postgres-admin`, `kagent-postgres-owner`, and `kagent-postgres-readwrite` in `kagent`; `substrate-postgres-owner` and `substrate-postgres-readwrite` in `ate-system`). It runs kagent's and Agent Substrate's pinned `setup.sql` scripts, verified by SHA-256, inside the database Pod, and prints no secrets. Re-running it keeps existing pools, Secrets, and logins. The connection strings use `sslmode=disable` because the example database has no TLS; beyond a lab, use a TLS-enabled PostgreSQL and the `sslmode=verify-full` settings in the kagent documentation. The script also creates a placeholder `kagent-openai` Secret for the chart's default ModelConfig, which the Librarian does not use.
+
+[example-librarian.yaml](config/manifests/k8s/kagent/example-librarian.yaml) defines the `ministral` ModelConfig (llama.cpp ignores its placeholder API key), the `jar-mcp` RemoteMCPServer, the `librarian` AgentTemplate with its prompt and tool list, a `librarian` Harness on the chart's `kagent-default` WorkerPool, and the Agent. Change both service URLs when JAR's `NAMESPACE` is not `jar`. Agent conditions (`ResolvedRefs`, `Ready`) report wiring problems; denied egress appears in `kubectl -n ate-system logs deploy/atenet-egress -c agentgateway`.
+
+The KServe example serves Ministral with `-c 4096`. A system prompt, five tool definitions, and a few search results fill that window quickly, so raise the context in the InferenceService, within GPU memory, before relying on multi-step research. Tool calling needs `--jinja`, which the example already sets.
+
+To try `jar-mcp` without kagent, run `kubectl -n jar port-forward svc/jar-mcp 18090:80` and point an MCP client, such as MCP Inspector, at `http://127.0.0.1:18090/mcp`.
 
 ## Deployment details
 
@@ -151,7 +177,7 @@ Kustomize validates the combined resources in memory, preserving the previous bu
 
 ### Application resources and browser access
 
-The bundle contains namespace `NAMESPACE`, a one-shot `jar-index` Job (`restartPolicy: Never`, `backoffLimit: 0`, one completion), a one-replica `jar-chat` Deployment, and the `jarchat` Service on port `80`. That Service forwards to `CHAT_PORT` (default `18080` in settings). Explicit workload flags apply the configured index batching/model/document options and browser settings.
+The bundle contains namespace `NAMESPACE`, a one-shot `jar-index` Job (`restartPolicy: Never`, `backoffLimit: 0`, one completion), one-replica `jar-chat` and `jar-mcp` Deployments, the `jarchat` Service on port `80`, and the cluster-internal `jar-mcp` Service on port `80`. They forward to `CHAT_PORT` (default `18080`) and `MCP_PORT` (default `18090`). `jar-chat` runs the `K8S_CHAT_IMAGE` image and `jar-mcp` runs the `K8S_MCP_IMAGE` image. Explicit workload flags apply the configured index batching/model/document options and browser settings.
 
 The Service has `tailscale.com/expose: "true"` and `tailscale.com/hostname: "jarchat"`. The existing Tailscale operator exposes application HTTP; HTTPS needs your existing TLS endpoint and matching public origin. It does not rewrite Host or relax same-origin checks. JAR has no application login: users with access to the exposed endpoint can use the shared chat and indexed content.
 
@@ -186,23 +212,24 @@ This is an optional release procedure when the cluster cannot already pull suita
 Run these commands from the repository root with Docker running:
 
 ```bash
-make build                  # Build both jar-index and jar-chat images for linux/amd64
+make build                  # Build the jar-index, jar-chat, and jar-mcp images for linux/amd64
 make build-index            # Build only jar-index from Dockerfile.index
-make build-chat             # Build only jar-chat from Dockerfile.chat
+make build-chat             # Build only jar-chat (Dockerfile target jar-chat)
+make build-mcp              # Build only jar-mcp (Dockerfile target jar-mcp)
 ```
 
-Image build targets default to `PLATFORM=linux/amd64`, including on ARM64 hosts. Override `PLATFORM` for another architecture; `DOCKER`, `INDEX_IMAGE`, `CHAT_IMAGE`, and `DOCKER_BUILD_FLAGS` remain configurable, for example:
+Image build targets default to `PLATFORM=linux/amd64`, including on ARM64 hosts. Override `PLATFORM` for another architecture; `DOCKER`, `INDEX_IMAGE`, `CHAT_IMAGE`, `MCP_IMAGE`, and `DOCKER_BUILD_FLAGS` remain configurable, for example:
 
 ```bash
-make build INDEX_IMAGE=example/jar-index:dev CHAT_IMAGE=example/jar-chat:dev DOCKER_BUILD_FLAGS=--pull
+make build INDEX_IMAGE=example/jar-index:dev CHAT_IMAGE=example/jar-chat:dev MCP_IMAGE=example/jar-mcp:dev DOCKER_BUILD_FLAGS=--pull
 make build PLATFORM=linux/arm64
 ```
 
-Use `PLATFORM` with `make build-index` or `make build-chat` to select the same architecture for an individual image. Reserve `DOCKER_BUILD_FLAGS` for additional build options such as `--pull`; the bundled DuckDB bindings support Linux AMD64 and ARM64.
+Use `PLATFORM` with `make build-index`, `make build-chat`, or `make build-mcp` to select the same architecture for an individual image. Reserve `DOCKER_BUILD_FLAGS` for additional build options such as `--pull`; the bundled DuckDB bindings support Linux AMD64 and ARM64.
 
-Both Dockerfiles compile the Go command with CGO in a multi-stage Go 1.27.3 build. The index image uses Debian Trixie slim with CA certificates, the C++ runtime, Poppler, headless LibreOffice Writer, `wvWare`, and DejaVu fonts for PDF/DOC/DOCX extraction. The smaller chat image uses `gcr.io/distroless/cc-debian13:nonroot` and contains the chat command and embedded browser interface; it has no shell or document converters.
+Both Dockerfiles compile the Go commands with CGO in a multi-stage Go 1.27.3 build. The index image uses Debian Trixie slim with CA certificates, the C++ runtime, Poppler, headless LibreOffice Writer, `wvWare`, and DejaVu fonts for PDF/DOC/DOCX extraction. The smaller chat and MCP images are two build targets of `Dockerfile` on `gcr.io/distroless/cc-debian13:nonroot`: `jar-chat` (the default target) contains the chat command with its embedded browser interface, and `jar-mcp` contains only the MCP server. Neither has a shell or document converters.
 
-Both run as UID/GID `65532`, with writable `/home/nonroot` for the DuckDB client's extension cache and temporary space for runtime work. The build context is allowlisted in `.dockerignore`: source, module files, license/notice, and Dockerfiles are included; `.env`, documents, database files, local caches, and binaries are excluded. Models and the DuckDB server remain separate services.
+All three images run as UID/GID `65532`, with writable `/home/nonroot` for the DuckDB client's extension cache and temporary space for runtime work. The build context is allowlisted in `.dockerignore`: source, module files, license/notice, and Dockerfiles are included; `.env`, documents, database files, local caches, and binaries are excluded. Models and the DuckDB server remain separate services.
 
 ### Push images
 
@@ -216,7 +243,7 @@ make push
 
 At the password prompt, enter a GitHub personal access token (classic) with `write:packages` permission. Follow the [GitHub Container registry authentication guide](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry); keep the token out of command arguments and repository files.
 
-`make push` runs `push-index` and `push-chat`. With `REGISTRY=ghcr.io/brito-rafa` and `IMAGE_TAG=latest`, it tags and pushes the existing local images to `ghcr.io/brito-rafa/jar-index:latest` and `ghcr.io/brito-rafa/jar-chat:latest`. These targets do not build images or sign in automatically; rebuild explicitly when source changes. To publish one image, use `make push-index` or `make push-chat`.
+`make push` runs `push-index`, `push-chat`, and `push-mcp`. With `REGISTRY=ghcr.io/brito-rafa` and `IMAGE_TAG=latest`, it tags and pushes the existing local images to `ghcr.io/brito-rafa/jar-index:latest`, `ghcr.io/brito-rafa/jar-chat:latest`, and `ghcr.io/brito-rafa/jar-mcp:latest`. These targets do not build images or sign in automatically; rebuild explicitly when source changes. To publish one image, use `make push-index`, `make push-chat`, or `make push-mcp`.
 
 Override the destination namespace and tag as needed (a trailing slash on `REGISTRY` is accepted):
 
@@ -224,7 +251,7 @@ Override the destination namespace and tag as needed (a trailing slash on `REGIS
 make push REGISTRY=ghcr.io/another-owner IMAGE_TAG=v1.0.0
 ```
 
-`INDEX_IMAGE` and `CHAT_IMAGE` select the existing local source images, independently of the destination. The destination names remain `REGISTRY/jar-index:IMAGE_TAG` and `REGISTRY/jar-chat:IMAGE_TAG`; custom source names do not rename the published packages. Sign in to the destination registry with an account permitted to publish there. Push sends the selected images as built; use `PLATFORM` on the build targets to choose their architecture.
+`INDEX_IMAGE`, `CHAT_IMAGE`, and `MCP_IMAGE` select the existing local source images, independently of the destination. The destination names remain `REGISTRY/jar-index:IMAGE_TAG`, `REGISTRY/jar-chat:IMAGE_TAG`, and `REGISTRY/jar-mcp:IMAGE_TAG`; custom source names do not rename the published packages. Sign in to the destination registry with an account permitted to publish there. Push sends the selected images as built; use `PLATFORM` on the build targets to choose their architecture.
 
 ## Troubleshooting and development
 
@@ -270,9 +297,9 @@ kubectl -n jar port-forward svc/granite-embedding-predictor 8081:80
 kubectl -n jar port-forward svc/duckdb 9494:9494
 ```
 
-A native client can then use `CHAT_URL=http://127.0.0.1:8080`, `EMBEDDING_URL=http://127.0.0.1:8081`, and `DB_URL=quack:127.0.0.1:9494` with the existing database token and `DB_DISABLE_SSL=true`. These localhost addresses apply to that client, not to JAR Pods. To debug only the application browser Service, use `kubectl -n jar port-forward svc/jarchat 18080:80` and browse `http://127.0.0.1:18080`; local Host/Origin checks remain enabled.
+A native client can then use `CHAT_URL=http://127.0.0.1:8080`, `EMBEDDING_URL=http://127.0.0.1:8081`, and `DB_URL=quack:127.0.0.1:9494` with the existing database token and `DB_DISABLE_SSL=true`. These localhost addresses apply to that client, not to JAR Pods. To debug only the application browser Service, use `kubectl -n jar port-forward svc/jarchat 18080:80` and browse `http://127.0.0.1:18080`; local Host/Origin checks remain enabled. For the MCP Service, use `kubectl -n jar port-forward svc/jar-mcp 18090:80` and connect an MCP client to `http://127.0.0.1:18090/mcp`.
 
-`hack/k8s-setup/04-portforward.sh` requires Tailscale and additionally binds infrastructure forwards to the host's Tailscale IPv4 address and forwards DuckDB UI port `4213`. Use it only for the intended host exposure. `01-minikube-start.sh` is a separate Linux AMD lab helper (profile `kserve`, 10 CPUs/32 GiB by default); it passes AMD devices and does not supply the NVIDIA GPU required by the unmodified chat example. Select the intended kubectl context before running other scripts.
+`hack/k8s-setup/04-portforward.sh` requires Tailscale and additionally binds infrastructure forwards to the host's Tailscale IPv4 address and forwards DuckDB UI port `4213`. Use it only for the intended host exposure. `01-minikube-start.sh` is a separate Linux AMD lab helper (profile `kserve`, 10 CPUs/32 GiB by default); it passes AMD devices, turns on the `certificates.k8s.io/v1beta1` PodCertificateRequest API that `04-kagent.sh` needs (and warns if an existing profile still lacks it), and does not supply the NVIDIA GPU required by the unmodified chat example. Select the intended kubectl context before running other scripts.
 
 ```bash
 make check-connectivity
@@ -293,9 +320,10 @@ make index DOCS="/absolute/path/to/documents"
 # Wait for indexing to finish.
 make chat-web
 make chat-terminal
+make mcp
 ```
 
-Choose one chat interface. Both chat targets run model/database connectivity checks before starting; indexing checks embedding/database connectivity. `make index` validates existing local directories before model/database work and has no `DOCS` default. It rejects blank lists, empty entries, files, and nonexistent directories. Status, metadata, chat, and help do not need `DOCS`.
+Choose one chat interface. `make mcp` serves the read-only MCP tools on `http://127.0.0.1:18090/mcp` (`MCP_HOST`, `MCP_PORT`) and needs only the embedding and database settings. Both chat targets run model/database connectivity checks before starting; indexing checks embedding/database connectivity. `make index` validates existing local directories before model/database work and has no `DOCS` default. It rejects blank lists, empty entries, files, and nonexistent directories. Status, metadata, chat, and help do not need `DOCS`.
 
 Ordinary indexing retains the corpus-fingerprint/update behavior; it does not use the Kubernetes bootstrap guard. `FORCE_INDEX=true` intentionally rebuilds an otherwise unchanged corpus. Source commands execute extraction locally and send passages/questions to configured model endpoints and stored text to DuckDB.
 
@@ -314,9 +342,13 @@ go run ./cmd/jar-chat -db-url quack:duckdb.example.com:9494 \
   -chat-url https://chat.example.com -chat-api-model ministral-3-8b \
   -embedding-url https://embedding.example.com \
   -embedding-api-model granite-embedding
+
+go run ./cmd/jar-mcp -db-url quack:duckdb.example.com:9494 \
+  -embedding-url https://embedding.example.com \
+  -embedding-api-model granite-embedding -port 18090
 ```
 
-`make build-binaries` creates native `bin/jar-index` and `bin/jar-chat`. Use `make cli-help` or either command's `-help` for all flags. `-skip-if-populated` is optional for direct indexing and wins over `-force` when a chunk exists.
+`make build-binaries` creates native `bin/jar-index`, `bin/jar-chat`, and `bin/jar-mcp`. Use `make cli-help` or any command's `-help` for all flags. `jar-mcp` listens on `127.0.0.1` unless `-host` says otherwise and has no authentication. `-skip-if-populated` is optional for direct indexing and wins over `-force` when a chunk exists.
 
 ### Native browser options
 
@@ -389,6 +421,14 @@ docker run --rm --env-file .env -p 127.0.0.1:18080:8080 jar-chat \
 ```
 
 Use CLI flags to override the image defaults; Make variables such as `CHAT_PORT` and `CHAT_PUBLIC_URL` have no effect on direct container runs.
+
+Run the MCP server from the `jar-mcp` image; by default it listens on port `8090` on all container interfaces:
+
+```bash
+docker run --rm --env-file .env -p 127.0.0.1:18090:8090 jar-mcp
+```
+
+Connect an MCP client to `http://127.0.0.1:18090/mcp`. The published port stays loopback-only; the server itself has no authentication.
 
 #### Reach services on the host
 

@@ -1,0 +1,111 @@
+# PostgreSQL for kagent 1.0 and Agent Substrate, running in the kagent namespace.
+# Apply with: kubectl -n kagent apply -f config/manifests/k8s/kagent/example-postgres.yaml
+# (hack/k8s-setup/06-kagent.sh does this, creates the logins, and writes the connection Secrets).
+#
+# kagent and Agent Substrate share the "kagent" database, each in its own schema, created by
+# their pinned setup.sql scripts. JAR's own data stays in DuckDB in the jar namespace; this
+# database only holds kagent sessions, agent revisions, and Substrate state.
+#
+#   kagent-controller (ns kagent) ───┐
+#                                    ├──> Service kagent-postgres:5432 ──> postgres ──> PVC
+#   Agent Substrate (ns ate-system) ─┘
+#
+# Lab trade-offs: one replica, no TLS (connection strings use sslmode=disable), no backups.
+# Losing the PVC loses every kagent session and agent revision.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kagent-postgres-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagent-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # never let two servers open the same data directory
+  selector:
+    matchLabels:
+      app: kagent-postgres
+  template:
+    metadata:
+      labels:
+        app: kagent-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:18-alpine   # the major version kagent's CLI uses; pin a digest for production
+        env:
+        - name: POSTGRES_DB
+          value: kagent
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD     # superuser; created by 06-kagent.sh, never used by kagent itself
+          valueFrom:
+            secretKeyRef:
+              name: kagent-postgres-admin
+              key: POSTGRES_PASSWORD
+        ports:
+        - name: postgres
+          containerPort: 5432
+        readinessProbe:               # TCP check: the first-run init server listens on the socket only
+          exec:
+            command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "kagent"]
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql   # PostgreSQL 18 images keep PGDATA at /var/lib/postgresql/18/docker
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: kagent-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagent-postgres
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: kagent-postgres
+spec:
+spec:
+  selector:
+    app: kagent-postgres
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+---
+# Only kagent and Agent Substrate may connect; the jar namespace and others may not.
+# Enforced only when the cluster's CNI implements NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kagent-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app: kagent-postgres
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [kagent, ate-system]
+    ports:
+    - port: 5432

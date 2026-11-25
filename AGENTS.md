@@ -8,24 +8,26 @@ JAR is a multilingual RAG client written in Go. Chat and embedding inference use
 
 - `cmd/jar-index`: document ingestion, index status, and source metadata maintenance.
 - `cmd/jar-chat`: shared chat engine exposed through browser and terminal interfaces.
+- `cmd/jar-mcp`: read-only MCP server for agents such as kagent.
 - `pkg/ingest`: recursive document extraction and index orchestration.
 - `pkg/chat`: retrieval, conversation state, citations, slash commands, translation, and HTTP handlers.
 - `pkg/chat/web`: embedded HTML, CSS, and JavaScript; no frontend build tool is required.
+- `pkg/mcpserver`: stateless Streamable HTTP MCP tools over the index (search, source listing, context); never writes to the database.
 - `pkg/catalog`: filename-derived source metadata.
 - `pkg/duck`: remote SQL, indexing, deduplication, vector search, and source context retrieval.
 - `pkg/inference`: OpenAI-compatible HTTP inference, response metrics, and application-owned request/response types.
 - `pkg/connection`: shared database connection flags.
 - `hack/check-connectivity.sh`: configured model/database connectivity checks.
-- `hack/k8s-setup` and `config/manifests/k8s`: example Kubernetes model and database deployments.
+- `hack/k8s-setup` and `config/manifests/k8s`: example Kubernetes model, database, and kagent deployments.
 - `config/manifests/kustomize`: committed application Kustomize templates with `${KEY}` placeholders only; never put real settings, host paths, or tokens there.
 - `make generate-manifests`: offline application Kustomize bundle generation and in-memory validation from `ENV_FILE`; default output `./config/manifests/generated` is private and Git-ignored; the generator refuses to write into the template directory.
 - `make deploy`: regenerate and apply that bundle to the current kubectl context.
 - `Dockerfile.index`: CGO index command plus Linux PDF/Word converters.
-- `Dockerfile.chat`: CGO chat command and embedded UI on a distroless runtime.
+- `Dockerfile`: distroless build targets `jar-chat` (default; CGO chat command and embedded UI) and `jar-mcp` (MCP server).
 - `.dockerignore`: allowlisted image build inputs; keep credentials, documents, databases, and local outputs out of the context.
 - `assets/images`: screenshots and other README assets.
 
-Keep the two explicit command entry points. Do not recreate a root `main.go`, bundled document directory, or public prebuilt-chunks input without a user request.
+Keep the three explicit command entry points. Do not recreate a root `main.go`, bundled document directory, or public prebuilt-chunks input without a user request.
 
 ## Local data and privacy
 
@@ -76,9 +78,9 @@ make vet
 make build-binaries
 ```
 
-`make build` builds both application images; `make build-index` and `make build-chat` build them independently. All image build targets default to `PLATFORM=linux/amd64`; use `PLATFORM=linux/arm64` for ARM64 images. Keep image names configurable through `INDEX_IMAGE`/`CHAT_IMAGE`, the platform through `PLATFORM`, and retain `DOCKER`/`DOCKER_BUILD_FLAGS` overrides for the executable and additional build options. Both runtime images use UID/GID 65532 and a writable home for DuckDB extensions. The index image needs PDF/Word converters and temporary output; the chat image does not. Preserve loopback-only published-port examples and existing Host/Origin checks when changing container defaults.
+`make build` builds all three application images; `make build-index`, `make build-chat`, and `make build-mcp` build them independently. All image build targets default to `PLATFORM=linux/amd64`; use `PLATFORM=linux/arm64` for ARM64 images. Keep image names configurable through `INDEX_IMAGE`/`CHAT_IMAGE`/`MCP_IMAGE`, the platform through `PLATFORM`, and retain `DOCKER`/`DOCKER_BUILD_FLAGS` overrides for the executable and additional build options. All runtime images use UID/GID 65532 and a writable home for DuckDB extensions. The index image needs PDF/Word converters and temporary output; the chat and MCP images do not. Preserve loopback-only published-port examples and existing Host/Origin checks when changing container defaults.
 
-`make push` aggregates `push-index`/`push-chat`, retagging existing `INDEX_IMAGE`/`CHAT_IMAGE` sources as `REGISTRY/jar-index:IMAGE_TAG` and `REGISTRY/jar-chat:IMAGE_TAG` (defaults: `REGISTRY=ghcr.io/brito-rafa`, `IMAGE_TAG=latest`) without rebuilding or logging in.
+`make push` aggregates `push-index`/`push-chat`/`push-mcp`, retagging existing `INDEX_IMAGE`/`CHAT_IMAGE`/`MCP_IMAGE` sources as `REGISTRY/jar-index:IMAGE_TAG`, `REGISTRY/jar-chat:IMAGE_TAG`, and `REGISTRY/jar-mcp:IMAGE_TAG` (defaults: `REGISTRY=ghcr.io/brito-rafa`, `IMAGE_TAG=latest`) without rebuilding or logging in.
 
 `make generate-manifests` uses Python 3 and configurable `KUSTOMIZE` to fill the public ConfigMap/Secret YAML placeholders and write the application bundle without applying resources; `NAMESPACE` selects its namespace. Keep filled secrets and the generated bundle private and ignored; validate combined Kustomize resources in memory. Stable ConfigMap/Secret names use Pod-template checksums for Deployment rollouts; Job-template immutability still applies. `make deploy` regenerates and applies to the current kubectl context without deleting Jobs, rebuilding, or pushing images. Preserve each absolute `DOCS` directory as a read-only `hostPath` of type `Directory` at the same path, without creating or checking those source directories on the generator host or provisioning storage; keep image/platform settings and Tailscale hostname/origin behavior synchronized with setup documentation.
 

@@ -1,5 +1,7 @@
 # Template: filled by `make generate-manifests`.
 # IMAGE_PULL_SECRET renders as [] when unset.
+# jar-chat serves the browser UI (K8S_CHAT_IMAGE); jar-mcp serves read-only MCP tools
+# to agents (K8S_MCP_IMAGE). Both images are built from ./Dockerfile build targets.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -56,4 +58,59 @@ spec:
           readinessProbe:
             tcpSocket:
               port: http
+            periodSeconds: 5
+---
+# Read-only MCP tools (search, list, context) for in-cluster agents such as kagent.
+# Cluster-internal only: service.yaml exposes it without Tailscale annotations.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jar-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jar-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jar-mcp
+      annotations:
+        checksum/configmap: ${CONFIGMAP_CHECKSUM}
+        checksum/secret: ${SECRET_CHECKSUM}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: ${PLATFORM_ARCH}
+      imagePullSecrets: ${IMAGE_PULL_SECRETS}
+      containers:
+        - name: jar-mcp
+          image: ${K8S_MCP_IMAGE}
+          args:
+            - "-host"
+            - "0.0.0.0"
+            - "-port"
+            - "$(MCP_PORT)"
+          envFrom:
+            - configMapRef:
+                name: jar-runtime
+            - secretRef:
+                name: jar-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: mcp
+              containerPort: ${MCP_PORT}
+          readinessProbe:
+            tcpSocket:
+              port: mcp
             periodSeconds: 5

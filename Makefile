@@ -12,6 +12,7 @@ GO ?= go
 DOCKER ?= docker
 INDEX_IMAGE ?= jar-index
 CHAT_IMAGE ?= jar-chat
+MCP_IMAGE ?= jar-mcp
 REGISTRY ?= ghcr.io/brito-rafa
 IMAGE_TAG ?= latest
 PLATFORM ?= linux/amd64
@@ -24,6 +25,7 @@ MANIFEST_DIR ?= config/manifests/generated
 NAMESPACE ?= jar
 K8S_INDEX_IMAGE ?=
 K8S_CHAT_IMAGE ?=
+K8S_MCP_IMAGE ?=
 INDEX_NODE_NAME ?=
 IMAGE_PULL_SECRET ?=
 DOCS ?=
@@ -36,12 +38,14 @@ CHAT_API_MODEL ?=
 EMBEDDING_API_MODEL ?=
 # This canonical identity is stored in the index; it is separate from an API alias.
 EMBEDDING_MODEL ?= bartowski/granite-embedding-278m-multilingual-GGUF:Q8_0
-DIMENSIONS ?= 768
+DIMENSIONS ?= 4096
 CHAT_PORT ?= 18080
 CHAT_HOST ?= 127.0.0.1
 CHAT_ALLOW_ANY_HOST ?= false
 CHAT_PUBLIC_URL ?=
 OPEN_BROWSER ?= true
+MCP_HOST ?= 127.0.0.1
+MCP_PORT ?= 18090
 FORCE_INDEX ?= false
 DOCUMENT_WORKERS ?= 20
 EMBEDDING_WORKERS ?= 1
@@ -49,13 +53,13 @@ EMBEDDING_BATCH_SIZE ?= 8
 EMBEDDING_BUFFER_BATCHES ?= 16
 INSERT_BATCH_SIZE ?= 128
 
-export REGISTRY IMAGE_TAG PLATFORM NAMESPACE K8S_INDEX_IMAGE K8S_CHAT_IMAGE INDEX_NODE_NAME IMAGE_PULL_SECRET
+export REGISTRY IMAGE_TAG PLATFORM NAMESPACE K8S_INDEX_IMAGE K8S_CHAT_IMAGE K8S_MCP_IMAGE INDEX_NODE_NAME IMAGE_PULL_SECRET
 export DOCS DB_URL DB_TOKEN DB_DISABLE_SSL CHAT_URL EMBEDDING_URL CHAT_API_MODEL EMBEDDING_API_MODEL
-export EMBEDDING_MODEL DIMENSIONS CHAT_PORT CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL OPEN_BROWSER
+export EMBEDDING_MODEL DIMENSIONS CHAT_PORT CHAT_HOST CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL OPEN_BROWSER MCP_HOST MCP_PORT
 export FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE EMBEDDING_BUFFER_BATCHES INSERT_BATCH_SIZE
 
 ##@ Application
-.PHONY: index metadata status chat chat-web chat-terminal run
+.PHONY: index metadata status chat chat-web chat-terminal mcp run
 index: ## Import DOCS using the configured embedding API and DuckDB service
 	@/bin/sh "$(CURDIR)/hack/check-docs.sh"
 	@test -n "$$DB_URL" && test -n "$$DB_TOKEN" && test -n "$$EMBEDDING_URL" || { echo 'ERROR: Set DB_URL, DB_TOKEN and EMBEDDING_URL in .env.' >&2; exit 2; }
@@ -87,6 +91,12 @@ chat-terminal: ## Chat in the terminal with slash commands and Tab completion
 	$(GO) run ./cmd/jar-chat -db-url "$$DB_URL" -chat-url "$$CHAT_URL" -embedding-url "$$EMBEDDING_URL" \
 		-chat-api-model "$$CHAT_API_MODEL" -embedding-api-model "$$EMBEDDING_API_MODEL"
 
+mcp: ## Serve read-only MCP tools for agents (MCP_PORT=18090, path /mcp)
+	@test -n "$$DB_URL" && test -n "$$DB_TOKEN" && test -n "$$EMBEDDING_URL" || { echo 'ERROR: Set DB_URL, DB_TOKEN and EMBEDDING_URL in .env.' >&2; exit 2; }
+	@/bin/sh "$(CURDIR)/hack/check-connectivity.sh" embedding db
+	$(GO) run ./cmd/jar-mcp -db-url "$$DB_URL" -embedding-url "$$EMBEDDING_URL" \
+		-embedding-api-model "$$EMBEDDING_API_MODEL" -host "$$MCP_HOST" -port "$$MCP_PORT"
+
 run: chat ## Alias for chat (run make index first)
 
 ##@ Services
@@ -99,17 +109,20 @@ db-reset: ## ERASE connected JAR index tables; requires CONFIRM=erase
 	$(GO) run ./cmd/jar-index -db-url "$$DB_URL" -reset -confirm=erase
 
 ##@ Container images
-.PHONY: build build-index build-chat
-build: build-index build-chat ## Build both container images
+.PHONY: build build-index build-chat build-mcp
+build: build-index build-chat build-mcp ## Build all three container images
 
 build-index: ## Build the jar-index image with document converters
 	$(DOCKER) build --platform "$(PLATFORM)" $(DOCKER_BUILD_FLAGS) -f Dockerfile.index -t "$(INDEX_IMAGE)" .
 
-build-chat: ## Build the Distroless jar-chat image
-	$(DOCKER) build --platform "$(PLATFORM)" $(DOCKER_BUILD_FLAGS) -f Dockerfile.chat -t "$(CHAT_IMAGE)" .
+build-chat: ## Build the Distroless jar-chat image (Dockerfile target jar-chat)
+	$(DOCKER) build --platform "$(PLATFORM)" $(DOCKER_BUILD_FLAGS) -f Dockerfile --target jar-chat -t "$(CHAT_IMAGE)" .
 
-.PHONY: push push-index push-chat
-push: push-index push-chat ## Tag and push both existing images to REGISTRY
+build-mcp: ## Build the Distroless jar-mcp image (Dockerfile target jar-mcp)
+	$(DOCKER) build --platform "$(PLATFORM)" $(DOCKER_BUILD_FLAGS) -f Dockerfile --target jar-mcp -t "$(MCP_IMAGE)" .
+
+.PHONY: push push-index push-chat push-mcp
+push: push-index push-chat push-mcp ## Tag and push all three existing images to REGISTRY
 
 push-index: ## Tag and push INDEX_IMAGE as REGISTRY/jar-index:IMAGE_TAG
 	$(DOCKER) tag "$(INDEX_IMAGE)" "$(patsubst %/,%,$(REGISTRY))/jar-index:$(IMAGE_TAG)"
@@ -119,13 +132,17 @@ push-chat: ## Tag and push CHAT_IMAGE as REGISTRY/jar-chat:IMAGE_TAG
 	$(DOCKER) tag "$(CHAT_IMAGE)" "$(patsubst %/,%,$(REGISTRY))/jar-chat:$(IMAGE_TAG)"
 	$(DOCKER) push "$(patsubst %/,%,$(REGISTRY))/jar-chat:$(IMAGE_TAG)"
 
+push-mcp: ## Tag and push MCP_IMAGE as REGISTRY/jar-mcp:IMAGE_TAG
+	$(DOCKER) tag "$(MCP_IMAGE)" "$(patsubst %/,%,$(REGISTRY))/jar-mcp:$(IMAGE_TAG)"
+	$(DOCKER) push "$(patsubst %/,%,$(REGISTRY))/jar-mcp:$(IMAGE_TAG)"
+
 ##@ Kubernetes manifests
 # Forward explicit overrides only; Make defaults/file exports must not replace
 # the generator's correctly parsed .env values.
 MANIFEST_SETTINGS = DB_URL DB_TOKEN DB_DISABLE_SSL CHAT_URL EMBEDDING_URL CHAT_API_MODEL EMBEDDING_API_MODEL \
 	DOCS EMBEDDING_MODEL DIMENSIONS FORCE_INDEX DOCUMENT_WORKERS EMBEDDING_WORKERS EMBEDDING_BATCH_SIZE \
-	EMBEDDING_BUFFER_BATCHES INSERT_BATCH_SIZE CHAT_PORT CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL \
-	REGISTRY IMAGE_TAG PLATFORM NAMESPACE K8S_INDEX_IMAGE K8S_CHAT_IMAGE INDEX_NODE_NAME IMAGE_PULL_SECRET
+	EMBEDDING_BUFFER_BATCHES INSERT_BATCH_SIZE CHAT_PORT CHAT_ALLOW_ANY_HOST CHAT_PUBLIC_URL MCP_PORT \
+	REGISTRY IMAGE_TAG PLATFORM NAMESPACE K8S_INDEX_IMAGE K8S_CHAT_IMAGE K8S_MCP_IMAGE INDEX_NODE_NAME IMAGE_PULL_SECRET
 MANIFEST_ENV_OVERRIDES = $(foreach setting,$(MANIFEST_SETTINGS),$(if $(filter environment command line,$(origin $(setting))),$(setting)))
 .PHONY: generate-manifests deploy
 generate-manifests: ## Fill config/manifests/kustomize templates from ENV_FILE into MANIFEST_DIR; validate offline
@@ -136,14 +153,16 @@ deploy: generate-manifests ## Always regenerate MANIFEST_DIR first, then apply i
 
 ##@ Development
 .PHONY: build-binaries cli-help test test-manifests vet clean
-build-binaries: ## Build native bin/jar-index and bin/jar-chat commands
+build-binaries: ## Build native bin/jar-index, bin/jar-chat and bin/jar-mcp commands
 	mkdir -p bin
 	$(GO) build -o bin/jar-index ./cmd/jar-index
 	$(GO) build -o bin/jar-chat ./cmd/jar-chat
+	$(GO) build -o bin/jar-mcp ./cmd/jar-mcp
 
-cli-help: ## Show index and chat command-line options
+cli-help: ## Show index, chat and MCP command-line options
 	$(GO) run ./cmd/jar-index -help
 	$(GO) run ./cmd/jar-chat -help
+	$(GO) run ./cmd/jar-mcp -help
 
 test: test-manifests ## Run Go and manifest-generator tests; integration tests remain opt-in
 	$(GO) test ./...
@@ -165,6 +184,7 @@ help: ## Display this help
 	  '  make index DOCS="/path/one;/path/two"' \
 	  '  make chat-web' \
 	  '  make chat-terminal' \
+	  '  make mcp' \
 	  '  make status' '' \
 	  'Services: DB_URL=quack:host:9494, DB_TOKEN, DB_DISABLE_SSL=false,' \
 	  '          CHAT_URL, EMBEDDING_URL, CHAT_API_MODEL, EMBEDDING_API_MODEL.' \
@@ -174,10 +194,11 @@ help: ## Display this help
 	  '              EMBEDDING_BATCH_SIZE=8, EMBEDDING_BUFFER_BATCHES=16, INSERT_BATCH_SIZE=128.' \
 	  'Browser: CHAT_HOST=127.0.0.1, CHAT_PORT=18080, OPEN_BROWSER=true,' \
 	  '         CHAT_ALLOW_ANY_HOST=false, CHAT_PUBLIC_URL=.' \
-	  'Images: make build (both), make build-index, make build-chat.' \
-	  '        INDEX_IMAGE=jar-index, CHAT_IMAGE=jar-chat, DOCKER=docker.' \
+	  'MCP: MCP_HOST=127.0.0.1, MCP_PORT=18090; read-only tools at http://MCP_HOST:MCP_PORT/mcp.' \
+	  'Images: make build (all three), make build-index, make build-chat, make build-mcp.' \
+	  '        INDEX_IMAGE=jar-index, CHAT_IMAGE=jar-chat, MCP_IMAGE=jar-mcp, DOCKER=docker.' \
 	  '        PLATFORM=linux/amd64 (override with linux/arm64), DOCKER_BUILD_FLAGS=.' \
-	  'Publish: make push (both), make push-index, make push-chat.' \
+	  'Publish: make push (all three), make push-index, make push-chat, make push-mcp.' \
 	  '         REGISTRY=ghcr.io/brito-rafa, IMAGE_TAG=latest; authenticate with docker login first.' \
 	  'Manifests: make generate-manifests (reads ENV_FILE=.env; offline).' \
 	  '           make deploy regenerates and applies to the current kubectl context.' \

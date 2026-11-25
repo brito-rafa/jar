@@ -18,12 +18,21 @@ from unittest import mock
 GEN = runpy.run_path(str(Path(__file__).with_name("generate-manifests.py")), run_name="jar_generator_test")
 ERROR = GEN["GenerationError"]
 ROOT = Path(__file__).resolve().parents[1]
-BUILT = b"\n---\n".join(b"kind: " + kind for kind in (b"Namespace", b"ConfigMap", b"Secret", b"Job", b"Deployment", b"Service")) + b"\n"
+KINDS = (b"Namespace", b"ConfigMap", b"Secret", b"Job", b"Deployment", b"Deployment", b"Service", b"Service")
+BUILT = b"\n---\n".join(b"kind: " + kind for kind in KINDS) + b"\n"
 
 
 def flow(text, key):
     """Parse one rendered JSON scalar or flow value, such as `volumes: [...]`."""
     return json.loads(re.search(r"^\s*" + re.escape(key) + r": (.+)$", text, re.MULTILINE).group(1))
+
+
+def document(text, name):
+    """Return the YAML document in a multi-document file whose metadata name matches."""
+    matches = [part for part in re.split(r"(?m)^---$", text) if re.search(r"(?m)^  name: " + re.escape(name) + r"$", part)]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one document named {name}, found {len(matches)}")
+    return matches[0]
 
 
 class GeneratorTests(unittest.TestCase):
@@ -134,9 +143,9 @@ class GeneratorTests(unittest.TestCase):
                 self.assertNotRegex(content, r"[0-9a-f]{64}")  # no rendered checksums
         for name, placeholders in (
             ("secret.yaml", ("${DB_TOKEN}",)),
-            ("configmap.yaml", ("${DOCS}", "${DB_URL}", "${CHAT_URL}", "${EMBEDDING_URL}", "${CHAT_PUBLIC_URL}")),
+            ("configmap.yaml", ("${DOCS}", "${DB_URL}", "${CHAT_URL}", "${EMBEDDING_URL}", "${CHAT_PUBLIC_URL}", "${MCP_PORT}")),
             ("job.yaml", ("${DOCS_VOLUMES}", "${DOCS_VOLUME_MOUNTS}", "${K8S_INDEX_IMAGE}", "${INDEX_NODE_NAME}")),
-            ("deployment.yaml", ("${K8S_CHAT_IMAGE}", "${CHAT_PORT}")),
+            ("deployment.yaml", ("${K8S_CHAT_IMAGE}", "${K8S_MCP_IMAGE}", "${CHAT_PORT}", "${MCP_PORT}")),
             ("kustomization.yaml", ("${NAMESPACE}",)),
             ("namespace.yaml", ("${NAMESPACE}",)),
         ):
@@ -164,6 +173,65 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(flow(job, "nodeName"), "")
         self.assertEqual(flow(job, "imagePullSecrets"), [])
 
+    def test_mcp_deployment_uses_its_own_image_and_stays_cluster_internal(self):
+        overrides = {"MCP_PORT": "9100", "CHAT_PORT": "9000", "K8S_CHAT_IMAGE": "registry.example/jar-chat:test",
+                     "K8S_MCP_IMAGE": "registry.example/jar-mcp:test",
+                     "IMAGE_PULL_SECRET": "registry-pull", "PLATFORM": "linux/arm64"}
+        with self.build():
+            self.generate(overrides)
+        deployment = (self.output / "deployment.yaml").read_text()
+        chat, mcp = document(deployment, "jar-chat"), document(deployment, "jar-mcp")
+        self.assertEqual(flow(chat, "containerPort"), 9000)
+        self.assertEqual(flow(mcp, "containerPort"), 9100)
+        self.assertEqual(flow(chat, "image"), "registry.example/jar-chat:test")
+        self.assertEqual(flow(mcp, "image"), "registry.example/jar-mcp:test")
+        self.assertNotIn("command:", mcp)  # The jar-mcp image's entrypoint runs the server.
+        self.assertIn('- "$(MCP_PORT)"', mcp)  # Kubernetes expands it from the ConfigMap.
+        self.assertIn("name: jar-runtime", mcp)
+        self.assertIn("name: jar-secret", mcp)
+        self.assertEqual(flow(mcp, "imagePullSecrets"), [{"name": "registry-pull"}])
+        self.assertEqual(flow(mcp, "kubernetes.io/arch"), "arm64")
+        self.assertIn("runAsNonRoot: true", mcp)
+        self.assertIn("allowPrivilegeEscalation: false", mcp)
+        self.assertNotIn("allow-any-host", mcp)
+        self.assertEqual(json.loads(re.search(r"^  MCP_PORT: (.+)$", (self.output / "configmap.yaml").read_text(),
+                                              re.MULTILINE).group(1)), "9100")
+        services = (self.output / "service.yaml").read_text()
+        self.assertIn("tailscale.com/expose", document(services, "jarchat"))
+        service = document(services, "jar-mcp")
+        self.assertNotIn("tailscale", service)
+        self.assertIn("type: ClusterIP", service)
+        self.assertIn("app.kubernetes.io/name: jar-mcp", service)
+        self.assertRegex(service, r"(?m)^      port: 80$")
+        self.assertRegex(service, r"(?m)^      targetPort: mcp$")
+
+    def test_images_default_to_registry_and_tag_per_component(self):
+        with self.build():
+            self.generate({"REGISTRY": "registry.example/team/", "IMAGE_TAG": "v2"})
+        deployment = (self.output / "deployment.yaml").read_text()
+        self.assertEqual(flow(document(deployment, "jar-chat"), "image"), "registry.example/team/jar-chat:v2")
+        self.assertEqual(flow(document(deployment, "jar-mcp"), "image"), "registry.example/team/jar-mcp:v2")
+        self.assertEqual(flow((self.output / "job.yaml").read_text(), "image"), "registry.example/team/jar-index:v2")
+
+    def test_make_builds_and_pushes_all_three_images(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertRegex(makefile, r"(?m)^build: build-index build-chat build-mcp\b")
+        self.assertRegex(makefile, r"(?m)^push: push-index push-chat push-mcp\b")
+        self.assertIn('-f Dockerfile --target jar-chat -t "$(CHAT_IMAGE)"', makefile)
+        self.assertIn('-f Dockerfile --target jar-mcp -t "$(MCP_IMAGE)"', makefile)
+        self.assertIn('/jar-mcp:$(IMAGE_TAG)"', makefile)
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        targets = re.findall(r"(?m)^FROM \S+ AS (\S+)$", dockerfile)
+        self.assertIn("jar-mcp", targets)
+        self.assertEqual(targets[-1], "jar-chat")  # Default target when --target is omitted.
+
+    def test_bundle_without_mcp_resources_is_rejected(self):
+        legacy = b"\n---\n".join(b"kind: " + kind for kind in (b"Namespace", b"ConfigMap", b"Secret", b"Job", b"Deployment", b"Service"))
+        with mock.patch.object(GEN["subprocess"], "run", return_value=subprocess.CompletedProcess([], 0, legacy, b"")):
+            with self.assertRaisesRegex(ERROR, "unexpected bundle"):
+                self.generate()
+        self.assertFalse(self.output.exists())
+
     def test_output_never_overwrites_committed_templates(self):
         sources = {p.name: p.read_bytes() for p in self.templates.iterdir()}
         for output in (self.templates, self.templates / "nested"):
@@ -190,9 +258,9 @@ class GeneratorTests(unittest.TestCase):
             rendered = GEN["resources"](settings, docs, template_dir=self.templates)
             sums = {name: hashlib.sha256(rendered[name].encode()).hexdigest()
                     for name in ("configmap.yaml", "secret.yaml")}
-            for pod in ("job.yaml", "deployment.yaml"):
-                self.assertIn('checksum/configmap: "' + sums["configmap.yaml"] + '"', rendered[pod])
-                self.assertIn('checksum/secret: "' + sums["secret.yaml"] + '"', rendered[pod])
+            for pod, count in (("job.yaml", 1), ("deployment.yaml", 2)):  # jar-chat and jar-mcp
+                self.assertEqual(rendered[pod].count('checksum/configmap: "' + sums["configmap.yaml"] + '"'), count)
+                self.assertEqual(rendered[pod].count('checksum/secret: "' + sums["secret.yaml"] + '"'), count)
             return sums
 
         original = bundle()
@@ -266,7 +334,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_invalid_configuration_does_not_create_output(self):
         for key, value in (("DOCS", "relative/path"), ("DOCS", "/one;;/two"), ("DOCS", "/one;"),
-                           ("CHAT_PORT", "65536"), ("FORCE_INDEX", "maybe"), ("PLATFORM", "windows/amd64"),
+                           ("CHAT_PORT", "65536"), ("MCP_PORT", "0"), ("FORCE_INDEX", "maybe"), ("PLATFORM", "windows/amd64"),
                            ("NAMESPACE", "not a namespace"), ("DB_TOKEN", "bad\nvalue")):
             with self.subTest(key=key):
                 with self.assertRaises(ERROR) as caught:

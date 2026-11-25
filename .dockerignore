@@ -9,5 +9,5 @@
 !LICENSE
 !NOTICE
 !Dockerfile.index
-!Dockerfile.chat
+!Dockerfile
 !.dockerignore

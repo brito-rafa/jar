@@ -40,11 +40,13 @@ DEFAULTS = {
     "CHAT_PORT": "18080",
     "CHAT_ALLOW_ANY_HOST": "false",
     "CHAT_PUBLIC_URL": "",
+    "MCP_PORT": "18090",
     "NAMESPACE": "jar",
     "REGISTRY": "ghcr.io/brito-rafa",
     "IMAGE_TAG": "latest",
     "K8S_INDEX_IMAGE": "",
     "K8S_CHAT_IMAGE": "",
+    "K8S_MCP_IMAGE": "",
     "INDEX_NODE_NAME": "",
     "IMAGE_PULL_SECRET": "",
     "PLATFORM": "linux/amd64",
@@ -55,7 +57,7 @@ RUNTIME_KEYS = (
     "EMBEDDING_API_MODEL", "DOCS", "EMBEDDING_MODEL", "DIMENSIONS",
     "FORCE_INDEX", "DOCUMENT_WORKERS", "EMBEDDING_WORKERS",
     "EMBEDDING_BATCH_SIZE", "EMBEDDING_BUFFER_BATCHES", "INSERT_BATCH_SIZE",
-    "CHAT_PORT", "CHAT_ALLOW_ANY_HOST", "CHAT_PUBLIC_URL",
+    "CHAT_PORT", "CHAT_ALLOW_ANY_HOST", "CHAT_PUBLIC_URL", "MCP_PORT",
 )
 KNOWN_KEYS = set(DEFAULTS) | set(REQUIRED)
 FILES = (
@@ -64,6 +66,9 @@ FILES = (
     "secret.yaml",
 )
 LEGACY_FILES = ("runtime.env", "secret.env", "rendered.yaml")
+# deployment.yaml holds jar-chat and jar-mcp; service.yaml holds jarchat and jar-mcp.
+EXPECTED_KINDS = sorted([b"Namespace", b"ConfigMap", b"Secret", b"Job",
+                         b"Deployment", b"Deployment", b"Service", b"Service"])
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "config/manifests/kustomize"
 DEFAULT_OUTPUT = Path("config/manifests/generated")
 
@@ -201,7 +206,7 @@ def validate(settings):
         ("DIMENSIONS", 1, 2147483647), ("DOCUMENT_WORKERS", 1, 64),
         ("EMBEDDING_WORKERS", 1, 8), ("EMBEDDING_BATCH_SIZE", 1, 128),
         ("EMBEDDING_BUFFER_BATCHES", 1, 1024), ("INSERT_BATCH_SIZE", 1, 512),
-        ("CHAT_PORT", 1, 65535),
+        ("CHAT_PORT", 1, 65535), ("MCP_PORT", 1, 65535),
     ):
         integer(settings, key, minimum, maximum)
     if not settings["EMBEDDING_MODEL"].strip():
@@ -219,7 +224,8 @@ def validate(settings):
     for key in ("REGISTRY", "IMAGE_TAG"):
         if not settings[key] or re.search(r"\s", settings[key]):
             raise GenerationError(f"{key} must be a nonempty image setting without whitespace")
-    for key, component in (("K8S_INDEX_IMAGE", "jar-index"), ("K8S_CHAT_IMAGE", "jar-chat")):
+    for key, component in (("K8S_INDEX_IMAGE", "jar-index"), ("K8S_CHAT_IMAGE", "jar-chat"),
+                           ("K8S_MCP_IMAGE", "jar-mcp")):
         if not settings[key]:
             settings[key] = f'{settings["REGISTRY"]}/{component}:{settings["IMAGE_TAG"]}'
         if re.search(r"\s", settings[key]):
@@ -295,7 +301,9 @@ def resources(settings, docs, template_dir=None):
                      "INDEX_NODE_NAME": settings["INDEX_NODE_NAME"],
                      "DOCS_VOLUMES": volumes, "DOCS_VOLUME_MOUNTS": mounts},
         "deployment.yaml": {**pods, "K8S_CHAT_IMAGE": settings["K8S_CHAT_IMAGE"],
-                            "CHAT_PORT": int(settings["CHAT_PORT"])},
+                            "K8S_MCP_IMAGE": settings["K8S_MCP_IMAGE"],
+                            "CHAT_PORT": int(settings["CHAT_PORT"]),
+                            "MCP_PORT": int(settings["MCP_PORT"])},
         "service.yaml": {},
     }
     for name, values in maps.items():
@@ -385,7 +393,7 @@ def generate(env_file, output, kustomize, environ=None, template_dir=None):
         if result.returncode or not result.stdout.strip():
             raise GenerationError("Kustomize build failed; previous output was preserved")
         kinds = re.findall(rb"^kind: ([A-Za-z]+)\s*$", result.stdout, flags=re.MULTILINE)
-        if sorted(kinds) != sorted([b"Namespace", b"ConfigMap", b"Secret", b"Job", b"Deployment", b"Service"]):
+        if sorted(kinds) != EXPECTED_KINDS:
             raise GenerationError("Kustomize build returned an unexpected bundle; previous output was preserved")
         install_bundle(stage, output)
     return output

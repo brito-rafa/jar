@@ -4,7 +4,7 @@
 
 JAR is a multilingual retrieval-augmented generation (RAG) application that recursively indexes **PDF (`.pdf`), Word (`.doc` and `.docx`), and plain-text (`.txt`) files** and answers questions using retrieved evidence with source references.
 
-**JAR in this repository is intended to run as a cloud native application on Kubernetes.** A `jar-index` Job extracts documents and stores passages and embeddings in a separate DuckDB service. A `jar-chat` Deployment serves the browser interface, using OpenAI-compatible chat and embedding services such as KServe. Document converters are included in the index image; inference models run in their own services.
+**JAR in this repository is intended to run as a cloud native application on Kubernetes.** A `jar-index` Job extracts documents and stores passages and embeddings in a separate DuckDB service. A `jar-chat` Deployment serves the browser interface, using OpenAI-compatible chat and embedding services such as KServe. A `jar-mcp` Deployment exposes the same index as read-only Model Context Protocol (MCP) tools for agents such as a [kagent research agent](SETUP.md#4-optional-research-agent-with-kagent). Document converters are included in the index image; inference models run in their own services.
 
 Created by [brito-rafa](https://github.com/brito-rafa) with [OpenAI Codex](https://openai.com/codex/).
 
@@ -33,6 +33,8 @@ Everything runs in the `jar` namespace by default.
    ```
 
    This fills the templates in `config/manifests/kustomize/` from `.env`, writes them to the Git-ignored `config/manifests/generated/`, and applies them. See [SETUP.md](SETUP.md#3-deploy-jar) to follow indexing and open the chat.
+
+4. **Optional: add a research agent.** [SETUP.md](SETUP.md#4-optional-research-agent-with-kagent) installs kagent and a Librarian agent that searches the index through `jar-mcp`.
 
 ## Import behavior
 
@@ -97,7 +99,7 @@ make build
 make push
 ```
 
-Builds default to `PLATFORM=linux/amd64`; use `PLATFORM=linux/arm64` for ARM64 nodes. The default destinations are `ghcr.io/brito-rafa/jar-index:latest` and `ghcr.io/brito-rafa/jar-chat:latest`; override `REGISTRY` and `IMAGE_TAG` to publish under an account you control. Authenticate to the registry first. See [container images](SETUP.md#container-images) for individual image targets, runtime contents, and registry authentication. `make deploy` does not build or push images.
+Builds default to `PLATFORM=linux/amd64`; use `PLATFORM=linux/arm64` for ARM64 nodes. The default destinations are `ghcr.io/brito-rafa/jar-index:latest`, `ghcr.io/brito-rafa/jar-chat:latest`, and `ghcr.io/brito-rafa/jar-mcp:latest`; override `REGISTRY` and `IMAGE_TAG` to publish under an account you control. Authenticate to the registry first. See [container images](SETUP.md#container-images) for individual image targets, runtime contents, and registry authentication. `make deploy` does not build or push images.
 
 ## Troubleshooting and development
 
@@ -109,6 +111,8 @@ make status
 make chat
 # Or use terminal chat:
 make chat-terminal
+# Read-only MCP tools on http://127.0.0.1:18090/mcp:
+make mcp
 ```
 
 `make chat` runs the browser interface on your workstation; it does not deploy JAR. For intentional index updates, use the maintenance procedures in SETUP.md and run only one indexer at a time. Native commands and Docker runs are separate from the Kubernetes installation procedure.

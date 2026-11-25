@@ -281,7 +281,7 @@ func readDocument(root, path string) ([]string, bool, error) {
 	}
 	var chunks []string
 	for page, text := range strings.Split(text, "\f") {
-		for _, chunk := range splitText(text, 180, 30) {
+		for _, chunk := range splitText(text, 350, 50) {
 			label := "section"
 			if strings.EqualFold(filepath.Ext(path), ".pdf") {
 				label = "page"

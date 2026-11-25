@@ -1,0 +1,105 @@
+# The Librarian: a kagent 1.0 research agent that answers from the JAR index through jar-mcp.
+# Apply after hack/k8s-setup/06-kagent.sh and `make deploy` (which creates jar-mcp):
+#   kubectl -n kagent apply -f config/manifests/k8s/kagent/example-librarian.yaml
+#
+#   kagent UI ──> Agent librarian (ns kagent, Worker on the kagent-default WorkerPool)
+#                   │  every outbound call leaves through Agent Substrate's egress gateway
+#                   ├──> ModelConfig ministral      ──> ministral-3-8b-predictor.jar.svc/v1
+#                   └──> RemoteMCPServer jar-mcp    ──> jar-mcp.jar.svc/mcp ──> DuckDB + embeddings
+#
+# The egress gateway allows both destinations because the AgentTemplate binds them, so no
+# EgressPolicy is needed. Adjust the two URLs if JAR's NAMESPACE is not "jar".
+---
+# llama.cpp without --api-key ignores this value; kagent's OpenAI client still expects a key.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ministral-api-key
+type: Opaque
+stringData:
+  OPENAI_API_KEY: not-used-by-llama-cpp
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: ministral
+spec:
+  provider: OpenAI
+  model: ministral-3-8b               # the --alias of the KServe InferenceService
+  apiKeySecret: ministral-api-key
+  apiKeySecretKey: OPENAI_API_KEY
+  openAI:
+    baseUrl: http://ministral-3-8b-predictor.jar.svc.cluster.local/v1
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: RemoteMCPServer
+metadata:
+  name: jar-mcp
+spec:
+  description: Read-only search over the JAR document index (search, list, and context tools).
+  url: http://jar-mcp.jar.svc.cluster.local/mcp
+  protocol: STREAMABLE_HTTP           # jar-mcp is stateless Streamable HTTP with JSON responses
+  timeout: 60s                        # covers the query embedding plus a DuckDB vector search
+  terminateOnClose: true
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: AgentTemplate
+metadata:
+  name: librarian
+spec:
+  description: Research assistant that answers from the JAR document library with traceable citations.
+  modelConfig:
+    name: ministral
+  systemPrompt: |
+    You are the Librarian, a research assistant for a private library of books and conference
+    transcripts written in English, Portuguese, and Spanish.
+
+    - Before answering any question about the library, call search_passages. Search again with
+      rephrased queries, or in another of the three languages, when the first results are weak.
+    - Answer in the language of the user's question. Prefer evidence in that language, but use
+      relevant passages in other languages and translate them faithfully.
+    - Support every factual statement with a citation such as [chunk 1234], using only chunk ids
+      and source locations that a tool returned in this conversation.
+    - Titles, document types, and dates come from filenames. Never present them as verified
+      bibliographic facts, and never invent authors, dates, identities, or quotations.
+    - Use get_passage_context to read around a promising chunk, get_conference_text for a whole
+      conference date, and list_sources to discover books or conferences. When a result says more
+      text follows, request the next offset only if you need it.
+    - Keep requests small: the default search limit of 5 passages is usually enough.
+    - If the retrieved evidence does not answer the question, say so instead of guessing.
+  tools:
+  - mcp:
+      server:
+        kind: RemoteMCPServer
+        name: jar-mcp
+      tools:
+      - index_status
+      - search_passages
+      - list_sources
+      - get_passage_context
+      - get_conference_text
+---
+# Runs the kagent harness on the WorkerPool that the kagent chart creates
+# (substrateWorkerPool.create: true). The bucket is the chart's default snapshot location.
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: librarian
+spec:
+  kagent: {}
+  substrate:
+    workerPoolRef:
+      name: kagent-default
+    snapshotPolicy:
+      location: s3://ate-snapshots/kagent/
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: librarian
+spec:
+  template:
+    ref:
+      name: librarian
+  harnessRef:
+    name: librarian
