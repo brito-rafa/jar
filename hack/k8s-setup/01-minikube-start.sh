@@ -34,6 +34,21 @@ else
   echo "         If this profile existed before, recreate it: minikube delete -p $PROFILE, then rerun." >&2
 fi
 
+# kubectl logs, exec, and port-forward reach the kubelet as the API server's kubelet client. Its
+# certificate can lack the kubeadm:cluster-admins group, which then leaves the user unauthorized
+# ("Forbidden (user=kube-apiserver-kubelet-client, ... subresource(s)=[proxy])"). Bind the user to
+# the built-in role for this when it is missing.
+KUBELET_CLIENT=kube-apiserver-kubelet-client
+kubelet_client_ok() { [ "$(k auth can-i get nodes/proxy --as="$KUBELET_CLIENT" 2>/dev/null)" = "yes" ]; }
+if kubelet_client_ok; then
+  echo "API server kubelet client: authorized for nodes/proxy"
+else
+  echo "Binding $KUBELET_CLIENT to system:kubelet-api-admin (needed by kubectl logs/exec/port-forward)"
+  k create clusterrolebinding "$KUBELET_CLIENT" --clusterrole=system:kubelet-api-admin \
+    --user="$KUBELET_CLIENT" --dry-run=client -o yaml | k apply -f -
+  kubelet_client_ok || echo "WARNING: $KUBELET_CLIENT still lacks nodes/proxy; kubectl logs will fail." >&2
+fi
+
 minikube profile "$PROFILE"
 
 echo "Allocatable:"

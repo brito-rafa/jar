@@ -61,7 +61,7 @@ spec:
             periodSeconds: 5
 ---
 # Read-only MCP tools (search, list, context) for in-cluster agents such as kagent.
-# Cluster-internal only: service.yaml exposes it without Tailscale annotations.
+# service.yaml exposes it in the cluster and on the tailnet as jarmcp; it has no authentication.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

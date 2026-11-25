@@ -66,7 +66,7 @@ FILES = (
     "secret.yaml",
 )
 LEGACY_FILES = ("runtime.env", "secret.env", "rendered.yaml")
-# deployment.yaml holds jar-chat and jar-mcp; service.yaml holds jarchat and jar-mcp.
+# deployment.yaml and service.yaml each hold jar-chat and jar-mcp.
 EXPECTED_KINDS = sorted([b"Namespace", b"ConfigMap", b"Secret", b"Job",
                          b"Deployment", b"Deployment", b"Service", b"Service"])
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "config/manifests/kustomize"

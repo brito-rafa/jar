@@ -15,8 +15,9 @@ spec:
       port: 80
       targetPort: http
 ---
-# Cluster-internal MCP endpoint, deliberately without Tailscale exposure.
-# Agents use http://jar-mcp.<NAMESPACE>.svc.cluster.local/mcp
+# MCP endpoint for agents: http://jar-mcp.<NAMESPACE>.svc.cluster.local/mcp in the cluster and
+# http://jarmcp/mcp on the tailnet. It has no authentication: restrict jarmcp in your tailnet ACLs,
+# or delete its two tailscale.com/ annotations to keep it cluster-internal.
 apiVersion: v1
 kind: Service
 metadata:

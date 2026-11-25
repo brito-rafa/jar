@@ -34,7 +34,33 @@ Everything runs in the `jar` namespace by default.
 
    This fills the templates in `config/manifests/kustomize/` from `.env`, writes them to the Git-ignored `config/manifests/generated/`, and applies them. See [SETUP.md](SETUP.md#3-deploy-jar) to follow indexing and open the chat.
 
-4. **Optional: add a research agent.** [SETUP.md](SETUP.md#4-optional-research-agent-with-kagent) installs kagent and a Librarian agent that searches the index through `jar-mcp`.
+4. **Optional: add a research agent.** See [Optional: research agent with kagent](#optional-research-agent-with-kagent) below.
+
+## Optional: research agent with kagent
+
+![JAR with kagent: DevOps deploys JAR with make deploy and kagent with 05-kagent.sh and example-librarian.yaml; end users chat through jar-chat or research through the kagent Librarian agent, which calls Ministral and the jar-mcp tools over the same DuckDB index; jar-chat, jar-mcp and both models are also on the tailnet](assets/images/jar-with-kagent.png)
+
+JAR works without kagent. Adding [kagent](https://kagent.dev) gives end users a second way in: a Librarian research agent next to the everyday `jar-chat`. `jar-chat` answers each question with one fixed retrieval pass. The agent instead decides which read-only `jar-mcp` tools to call (`search_passages`, `list_sources`, `get_passage_context`, `get_conference_text`, `index_status`), can search several times before answering, and the kagent UI shows every tool call. It uses the same Ministral model, embedding model, and DuckDB index, so nothing is re-indexed. With the Tailscale operator installed, `jar-mcp` is also on your tailnet as `http://jarmcp/mcp` for other MCP clients; it has no authentication, so limit it in your tailnet ACLs.
+
+Requirements:
+
+- JAR deployed with `make deploy` (step 3), which also runs `jar-mcp`.
+- Kubernetes 1.37 or later serving the beta `certificates.k8s.io/v1beta1` PodCertificateRequest API, which Agent Substrate needs. It is off by default; on minikube, `hack/k8s-setup/01-minikube-start.sh` turns it on.
+- Helm, `jq`, `openssl`, and `curl`. The script installs the `kubectl-ate` plugin when it is missing.
+- Ministral with at least a 16K context. The agent's first request is already about 8,000 tokens; the KServe example sets `-c 16384 -np 1`.
+
+```sh
+bash hack/k8s-setup/05-kagent.sh
+kubectl -n kagent apply -f config/manifests/k8s/kagent/example-librarian.yaml
+kubectl -n kagent get agents librarian        # wait for Ready
+kubectl -n kagent port-forward svc/kagent-ui 8082:8080
+```
+
+Open `http://localhost:8082` and choose `librarian`. The Agents page shows it `Ready`, built from the `librarian` template and harness:
+
+![kagent Agents page listing the librarian agent in namespace kagent, with template librarian, harness librarian, status Ready, and one conversation](assets/images/kagent-agents.png)
+
+If a reply fails, start a new session rather than retrying in the same one: Ministral's chat template rejects a history with two user messages in a row, which a failed turn leaves behind. [SETUP.md](SETUP.md#4-optional-research-agent-with-kagent) covers the PostgreSQL the script installs, the agent's resources, egress, and troubleshooting.
 
 ## Import behavior
 

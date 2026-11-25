@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 04-tailscale.sh — Tailscale Kubernetes Operator, which gives Services annotated with
-# tailscale.com/expose (JAR's jarchat Service) their own tailnet hostname.
+# tailscale.com/expose (JAR's jar-chat and jar-mcp Services, the KServe predictors) their own tailnet hostname.
 #
 # Follows https://tailscale.com/docs/kubernetes-operator/install-operator (Helm). First, in the
 # Tailscale admin console:
@@ -79,7 +79,7 @@ cat <<EOF
 The Tailscale operator is running in namespace ${NS}. It should appear as "tailscale-operator"
 (tag:k8s-operator) in the admin console's Machines page.
   kubectl -n ${NS} logs deploy/${DEPLOYMENT} --tail=20   # OAuth scope or tag errors show here
-JAR's jarchat Service carries tailscale.com/expose, so after make deploy the operator adds a ts-*
-proxy Pod here and a "jarchat" machine: open http://jarchat, or set CHAT_PUBLIC_URL to the full
-MagicDNS name and run make deploy again.
+JAR's jar-chat and jar-mcp Services carry tailscale.com/expose, so after make deploy the operator adds a
+ts-* proxy Pod here for each, with machines "jarchat" and "jarmcp": open http://jarchat, or set
+CHAT_PUBLIC_URL to the full MagicDNS name and run make deploy again.
 EOF

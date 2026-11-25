@@ -173,7 +173,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(flow(job, "nodeName"), "")
         self.assertEqual(flow(job, "imagePullSecrets"), [])
 
-    def test_mcp_deployment_uses_its_own_image_and_stays_cluster_internal(self):
+    def test_mcp_deployment_uses_its_own_image_and_both_services_join_the_tailnet(self):
         overrides = {"MCP_PORT": "9100", "CHAT_PORT": "9000", "K8S_CHAT_IMAGE": "registry.example/jar-chat:test",
                      "K8S_MCP_IMAGE": "registry.example/jar-mcp:test",
                      "IMAGE_PULL_SECRET": "registry-pull", "PLATFORM": "linux/arm64"}
@@ -197,9 +197,12 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(json.loads(re.search(r"^  MCP_PORT: (.+)$", (self.output / "configmap.yaml").read_text(),
                                               re.MULTILINE).group(1)), "9100")
         services = (self.output / "service.yaml").read_text()
-        self.assertIn("tailscale.com/expose", document(services, "jarchat"))
+        chat_service = document(services, "jar-chat")
+        self.assertIn('tailscale.com/expose: "true"', chat_service)
+        self.assertIn("tailscale.com/hostname: jarchat", chat_service)
         service = document(services, "jar-mcp")
-        self.assertNotIn("tailscale", service)
+        self.assertIn('tailscale.com/expose: "true"', service)
+        self.assertIn("tailscale.com/hostname: jarmcp", service)
         self.assertIn("type: ClusterIP", service)
         self.assertIn("app.kubernetes.io/name: jar-mcp", service)
         self.assertRegex(service, r"(?m)^      port: 80$")
